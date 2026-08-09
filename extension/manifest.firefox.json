@@ -1,0 +1,62 @@
+{
+  "manifest_version": 2,
+  "name": "WOH Account Surveys",
+  "version": "0.3.7",
+  "description": "Show the 10 most recent Ask-an-Expert survey answers for the Account on the current Appointment page.",
+  "applications": {
+    "gecko": {
+      "id": "woh-account-surveys@local.dev",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "https://workday.lightning.force.com/*",
+    "https://workday.my.salesforce.com/*",
+    "https://workday--c.vf.force.com/*"
+  ],
+  "background": {
+    "scripts": ["api.js", "background.js"],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_title": "WOH Account Surveys",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://workday.lightning.force.com/lightning/r/Appointment__c/*",
+        "https://workday.lightning.force.com/lightning/r/a3N*"
+      ],
+      "js": [
+        "content/scrape-utils.js",
+        "content/sf-api.js",
+        "content/panel.js",
+        "content/appointment.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://workday.lightning.force.com/*",
+        "https://workday.my.salesforce.com/*",
+        "https://workday--c.vf.force.com/*"
+      ],
+      "js": ["content/scrape-utils.js", "content/feedback.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

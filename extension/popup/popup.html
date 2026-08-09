@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>WOH Account Surveys</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        width: 520px;
+        max-height: 560px;
+        margin: 0;
+        padding: 14px 14px 16px;
+        color: #1f1f1f;
+        overflow-y: auto;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 4px;
+      }
+      .subtitle {
+        font-size: 12px;
+        color: #666;
+        margin-bottom: 8px;
+      }
+      button {
+        width: 100%;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        border: none;
+        border-radius: 8px;
+        background: #f3f3f3;
+        color: #1f1f1f;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .status {
+        font-size: 13px;
+        margin: 4px 0 10px;
+        min-height: 18px;
+        color: #444;
+      }
+      .account {
+        font-size: 12px;
+        color: #333;
+        margin-bottom: 10px;
+        font-weight: 600;
+      }
+      .meta {
+        font-size: 11px;
+        color: #666;
+        line-height: 1.4;
+      }
+      table.summary {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        table-layout: fixed;
+      }
+      table.summary th {
+        text-align: left;
+        font-size: 11px;
+        color: #555;
+        font-weight: 600;
+        padding: 6px 8px;
+        border-bottom: 1px solid #ddd;
+        background: #f7f7f7;
+      }
+      table.summary td {
+        padding: 8px;
+        border-bottom: 1px solid #eee;
+        vertical-align: top;
+        word-wrap: break-word;
+      }
+      table.summary th:nth-child(1),
+      table.summary td:nth-child(1) {
+        width: 22%;
+      }
+      table.summary th:nth-child(2),
+      table.summary td:nth-child(2) {
+        width: 22%;
+      }
+      table.summary th:nth-child(3),
+      table.summary td:nth-child(3) {
+        width: 28%;
+      }
+      table.summary th:nth-child(4),
+      table.summary td:nth-child(4) {
+        width: 28%;
+      }
+      table.summary a {
+        color: #0176d3;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      table.summary a:hover {
+        text-decoration: underline;
+      }
+      tr.csat-green td {
+        background: #d4edda;
+      }
+      tr.csat-yellow td {
+        background: #fff3cd;
+      }
+      tr.csat-red td {
+        background: #f8d7da;
+      }
+      tr.csat-error td {
+        background: #f5f5f5;
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>WOH Account Surveys</h1>
+    <div class="subtitle">10 most recent surveys for this Account</div>
+    <div id="status" class="status">Loading…</div>
+    <button id="retryBtn" hidden>Retry</button>
+    <div id="account" class="account" hidden></div>
+    <div id="results"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
