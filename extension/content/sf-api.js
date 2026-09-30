@@ -1,9 +1,11 @@
 /**
  * Salesforce Lightning UI API helpers (uses the logged-in browser session).
  */
-(function initWohSfApi() {
+(function initWohSfApi(root) {
   const API_VERSION = 'v59.0';
   const RELATED_LIST = 'WOH_Survey_Results__r';
+  const SURVEY_OBJECT = 'WOH_Survey_Result__c';
+  const SURVEY_RELATIONSHIP = 'WOH_Survey_Results';
 
   async function fetchJson(pathOrUrl) {
     const url = pathOrUrl.startsWith('http')
@@ -33,6 +35,16 @@
     );
   }
 
+  /** Fetch specific fields (use when Full layout omits them). */
+  async function uiApiRecordFields(recordId, fields) {
+    const list = Array.isArray(fields) ? fields.filter(Boolean) : [];
+    if (!list.length) return uiApiRecord(recordId);
+    const param = list.map(encodeURIComponent).join(',');
+    return fetchJson(
+      `/services/data/${API_VERSION}/ui-api/records/${encodeURIComponent(recordId)}?fields=${param}`
+    );
+  }
+
   function fieldValue(record, apiName) {
     const field = record?.fields?.[apiName];
     if (!field) return null;
@@ -42,12 +54,204 @@
     return field.value ?? field.displayValue ?? null;
   }
 
+  function decodeDisplayText(text) {
+    if (window.WohHtmlText?.decodeHtmlEntities) {
+      return window.WohHtmlText.decodeHtmlEntities(text);
+    }
+    return text == null ? '' : String(text);
+  }
+
   function fieldDisplay(record, apiName) {
     const field = record?.fields?.[apiName];
     if (!field) return '';
-    if (field.displayValue) return field.displayValue;
+    if (field.displayValue) return decodeDisplayText(field.displayValue);
     const value = fieldValue(record, apiName);
-    return value == null ? '' : String(value);
+    return value == null ? '' : decodeDisplayText(String(value));
+  }
+
+  /**
+   * Child lookup on WOH_Survey_Result__c that the Account related list
+   * WOH_Survey_Results__r is built from. Describe does not depend on
+   * that list being present on the record type's page layout.
+   */
+  function surveyLookupFieldFromDescribe(desc) {
+    const rel = (desc?.childRelationships || []).find((row) => {
+      const child = row?.childSObject || row?.childObjectApiName;
+      const name = row?.relationshipName || '';
+      return (
+        child === SURVEY_OBJECT &&
+        (name === SURVEY_RELATIONSHIP || name === `${SURVEY_RELATIONSHIP}__r`)
+      );
+    });
+    return rel?.field || rel?.fieldName || null;
+  }
+
+  function isAccountSurveySoql(soql) {
+    return (
+      typeof soql === 'string' &&
+      soql.length < 2000 &&
+      /^SELECT Id, Name, Appointment__c, Appointment__r\.Name(?:, Appointment__r\.[A-Za-z][A-Za-z0-9_]*(?:\.Name)?)?, Date_Time_Survey_Submitted__c FROM WOH_Survey_Result__c WHERE [A-Za-z][A-Za-z0-9_]* = '[a-zA-Z0-9]{15,18}' ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST LIMIT \d{1,2}$/.test(
+        soql
+      )
+    );
+  }
+
+  /**
+   * SOQL fragment for the Appointment field labeled Request (REQ- / OPR-).
+   * Appointment.Name is the APP-##### record name, which is not that number.
+   */
+  function appointmentRequestSelect(info) {
+    const fields = info?.fields;
+    if (!fields || typeof fields !== 'object') return '';
+    const rows = Array.isArray(fields) ? fields : Object.values(fields);
+    const matches = rows.filter((field) => {
+      const apiName = String(field?.apiName || '');
+      const label = String(field?.label || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(apiName) || apiName === 'Name') return false;
+      return (
+        /^request(?: number|#)?$/i.test(label) ||
+        /^(?:Request__c|Request_Number__c|Req_Number__c|Req__c)$/.test(apiName)
+      );
+    });
+    const field =
+      matches.find((row) => /^request$/i.test(String(row.label || '').trim())) || matches[0];
+    if (!field) return '';
+    if (/reference/i.test(String(field.dataType || ''))) {
+      const rel = String(field.relationshipName || '');
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(rel)) return '';
+      return `Appointment__r.${rel}.Name`;
+    }
+    return `Appointment__r.${field.apiName}`;
+  }
+
+  function recentSurveySoql(accountId, lookupField, limit, requestSelect = '') {
+    if (!/^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(String(accountId || ''))) {
+      throw new Error('Invalid Account Id');
+    }
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(String(lookupField || ''))) {
+      throw new Error('Invalid survey lookup field');
+    }
+    const extra = String(requestSelect || '').trim();
+    if (extra && !/^Appointment__r\.[A-Za-z][A-Za-z0-9_]*(?:\.Name)?$/.test(extra)) {
+      throw new Error('Invalid appointment request field');
+    }
+    const n = Math.min(Math.max(Number(limit) || 10, 1), 50);
+    return (
+      'SELECT Id, Name, Appointment__c, Appointment__r.Name' +
+      (extra ? `, ${extra}` : '') +
+      ', Date_Time_Survey_Submitted__c ' +
+      `FROM ${SURVEY_OBJECT} ` +
+      `WHERE ${lookupField} = '${accountId}' ` +
+      'ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST ' +
+      `LIMIT ${n}`
+    );
+  }
+
+  function relationFieldsFromSoql(rel) {
+    const fields = {};
+    if (!rel || typeof rel !== 'object') return fields;
+    for (const [key, value] of Object.entries(rel)) {
+      if (key === 'attributes' || value == null) continue;
+      if (typeof value === 'string' || typeof value === 'number') {
+        fields[key] = { value: String(value), displayValue: String(value) };
+        continue;
+      }
+      if (typeof value === 'object') {
+        const nestedName = value.Name || '';
+        if (!nestedName) continue;
+        fields[key] = {
+          displayValue: String(nestedName),
+          value: { fields: { Name: { value: String(nestedName), displayValue: String(nestedName) } } },
+        };
+      }
+    }
+    return fields;
+  }
+
+  /** SOQL rows → the UI API record shape the survey panel already reads. */
+  function soqlSurveyToUiRecord(row) {
+    const name = row?.Name || '';
+    const appointmentId = row?.Appointment__c || null;
+    const relFields = relationFieldsFromSoql(row?.Appointment__r);
+    const appointmentName = relFields.Name?.value || '';
+    const submitted = row?.Date_Time_Survey_Submitted__c || '';
+    return {
+      id: row?.Id || '',
+      fields: {
+        Name: { value: name, displayValue: name },
+        Appointment__c: { value: appointmentId, displayValue: appointmentName },
+        Appointment__r: Object.keys(relFields).length
+          ? { displayValue: appointmentName, value: { fields: relFields } }
+          : null,
+        Date_Time_Survey_Submitted__c: { value: submitted, displayValue: submitted },
+      },
+    };
+  }
+
+  let surveyLookupFieldPromise = null;
+  let appointmentRequestSelectPromise = null;
+
+  async function cachedAppointmentRequestSelect() {
+    if (!appointmentRequestSelectPromise) {
+      appointmentRequestSelectPromise = fetchJson(
+        `/services/data/${API_VERSION}/ui-api/object-info/Appointment__c`
+      )
+        .then((info) => appointmentRequestSelect(info))
+        .catch((err) => {
+          appointmentRequestSelectPromise = null;
+          throw err;
+        });
+    }
+    return appointmentRequestSelectPromise;
+  }
+
+  async function surveyAccountLookupField() {
+    if (!surveyLookupFieldPromise) {
+      surveyLookupFieldPromise = fetchJson(`/services/data/${API_VERSION}/ui-api/object-info/Account`)
+        .then((desc) => {
+          const field = surveyLookupFieldFromDescribe(desc);
+          if (!field) throw new Error('Could not find the Account lookup on WOH Survey Result');
+          return field;
+        })
+        .catch((err) => {
+          surveyLookupFieldPromise = null;
+          throw err;
+        });
+    }
+    return surveyLookupFieldPromise;
+  }
+
+  /**
+   * Run SOQL from the extension background against the API host.
+   * lightning.force.com rejects /query with "Session expired or invalid"
+   * even while the UI API session on that page is still valid.
+   */
+  async function fetchAccountSurveyQuery(soql) {
+    const ext = globalThis.browser ?? globalThis.chrome;
+    if (!ext?.runtime?.sendMessage) {
+      throw new Error('Extension runtime unavailable for survey query');
+    }
+    const response = await ext.runtime.sendMessage({ type: 'SF_QUERY', soql });
+    if (!response?.ok) throw new Error(response?.error || 'Salesforce query failed');
+    return response.json;
+  }
+
+  /**
+   * Newest survey-result rows for an Account.
+   * SOQL avoids the related-list UI API, which only serves lists on the
+   * record type page layout. Some Account layouts omit WOH_Survey_Results__r.
+   */
+  async function queryRecentSurveys(accountId, limit = 10) {
+    const lookupField = await surveyAccountLookupField();
+    let requestSelect = '';
+    try {
+      requestSelect = await cachedAppointmentRequestSelect();
+    } catch (err) {
+      console.warn('[WOH Survey] Appointment request-field lookup failed', err);
+    }
+    const soql = recentSurveySoql(accountId, lookupField, limit, requestSelect);
+    const json = await fetchAccountSurveyQuery(soql);
+    return (json.records || []).map(soqlSurveyToUiRecord);
   }
 
   /**
@@ -123,14 +327,25 @@
     throw new Error(`Could not load feedback page: ${errors.join('; ')}`);
   }
 
-  window.WohSfApi = {
+  const api = {
     API_VERSION,
     RELATED_LIST,
     uiApiRecord,
+    uiApiRecordFields,
     fieldValue,
     fieldDisplay,
+    surveyLookupFieldFromDescribe,
+    appointmentRequestSelect,
+    isAccountSurveySoql,
+    recentSurveySoql,
+    soqlSurveyToUiRecord,
+    queryRecentSurveys,
     relatedListAll,
     fetchFeedbackHtml,
     fetchFeedbackHtmlDirect,
   };
-})();
+  root.WohSfApi = api;
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

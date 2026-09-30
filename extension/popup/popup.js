@@ -1,28 +1,17 @@
 const api = globalThis.browser ?? globalThis.chrome;
 
 const statusEl = document.getElementById('status');
+const subtitleEl = document.getElementById('subtitle');
 const retryBtn = document.getElementById('retryBtn');
 const accountEl = document.getElementById('account');
+const avgEl = document.getElementById('avg');
 const resultsEl = document.getElementById('results');
 
-function isAppointmentUrl(url = '') {
-  return (
-    /\/lightning\/r\/Appointment__c\//.test(url) ||
-    /\/lightning\/r\/a3N[a-zA-Z0-9]{12,15}(?:\/|$|\?)/.test(url)
-  );
-}
+const { isSurveyHostUrl } = window.WohPageContext;
 
 async function getActiveTab() {
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   return tab;
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 /**
@@ -55,12 +44,49 @@ function csatRowClass(overallSatisfaction) {
   return 'csat-red';
 }
 
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null || value === false) continue;
+    if (key === 'className') node.className = value;
+    else node.setAttribute(key, String(value));
+  }
+  for (const child of children) {
+    if (child == null || child === false) continue;
+    node.append(child);
+  }
+  return node;
+}
+
+function reqNode(survey) {
+    const label = window.WohRequestNumber?.requestNumberLabel
+      ? window.WohRequestNumber.requestNumberLabel(survey)
+      : survey.req_number || survey.appointment_name || '—';
+  const href = survey.ok
+    ? survey.feedback_url || ''
+    : survey.feedback_url || survey.appointment_url || '';
+  if (href) {
+    const attrs = { href, target: '_blank', rel: 'noreferrer' };
+    if (survey.ok) attrs.title = 'Open survey detail';
+    return el('a', attrs, label);
+  }
+  return label;
+}
+
 function renderSurveys(payload) {
   const surveys = payload.surveys || [];
+  if (subtitleEl) {
+    subtitleEl.textContent =
+      payload.page_context === 'account'
+        ? '20 most recent surveys for this Account'
+        : '10 most recent surveys for this Account';
+  }
   if (payload.account_name || payload.account_id) {
     accountEl.hidden = false;
-    accountEl.textContent = payload.account_name
-      ? `Account: ${payload.account_name}`
+    const decodeText = window.WohHtmlText?.decodeHtmlEntities || ((text) => String(text ?? ''));
+    const accountName = payload.account_name ? decodeText(payload.account_name) : '';
+    accountEl.textContent = accountName
+      ? `Account: ${accountName}`
       : `Account: ${payload.account_id}`;
     if (payload.account_id) {
       accountEl.textContent += ` (${payload.account_id})`;
@@ -68,59 +94,67 @@ function renderSurveys(payload) {
   } else {
     accountEl.hidden = true;
   }
+  if (avgEl) {
+    if (payload.page_context === 'account' && payload.csat_average_display) {
+      const score = Number(payload.csat_average_display);
+      const tone = score > 4.5 ? 'good' : score >= 4.2 ? 'mid' : 'low';
+      avgEl.hidden = false;
+      avgEl.className = tone === 'good' ? 'avg-badge' : `avg-badge ${tone}`;
+      avgEl.textContent = `${payload.csat_average_display}/5`;
+      avgEl.title = `Average ${payload.csat_average_display}/5`;
+    } else {
+      avgEl.hidden = true;
+      avgEl.textContent = '';
+    }
+  }
 
   if (!surveys.length) {
-    resultsEl.innerHTML = `<div class="meta">${escapeHtml(payload.message || 'No surveys found.')}</div>`;
+    resultsEl.replaceChildren(
+      el('div', { className: 'meta' }, payload.message || 'No surveys found.')
+    );
     return;
   }
 
-  const rows = surveys
-    .map((survey) => {
-      if (!survey.ok) {
-        const label = escapeHtml(survey.req_number || survey.survey_result_name || survey.appointment_id || '—');
-        const detailHref = survey.feedback_url || survey.appointment_url || '';
-        const reqCell = detailHref
-          ? `<a href="${escapeHtml(detailHref)}" target="_blank" rel="noreferrer">${label}</a>`
-          : label;
-        return `<tr class="csat-error">
-          <td>${reqCell}</td>
-          <td>${escapeHtml(survey.submitted_at || '—')}</td>
-          <td>${escapeHtml(survey.submitted_by || '—')}</td>
-          <td>${escapeHtml(survey.error || 'Failed to load')}</td>
-        </tr>`;
-      }
+  const rows = surveys.map((survey) => {
+    if (!survey.ok) {
+      return el(
+        'tr',
+        { className: 'csat-error' },
+        el('td', {}, reqNode(survey)),
+        el('td', {}, survey.submitted_at || '—'),
+        el('td', {}, survey.submitted_by || '—'),
+        el('td', {}, survey.error || 'Failed to load')
+      );
+    }
+    return el(
+      'tr',
+      { className: csatRowClass(survey.overall_satisfaction) },
+      el('td', {}, reqNode(survey)),
+      el('td', {}, survey.submitted_at || '—'),
+      el('td', {}, survey.submitted_by || '—'),
+      el('td', {}, survey.overall_satisfaction || '—')
+    );
+  });
 
-      const reqLabel = escapeHtml(survey.req_number || survey.survey_result_name || '—');
-      const detailUrl = survey.feedback_url || '';
-      const reqCell = detailUrl
-        ? `<a href="${escapeHtml(detailUrl)}" target="_blank" rel="noreferrer" title="Open survey detail">${reqLabel}</a>`
-        : reqLabel;
-
-      const rowClass = csatRowClass(survey.overall_satisfaction);
-      return `<tr class="${rowClass}">
-        <td>${reqCell}</td>
-        <td>${escapeHtml(survey.submitted_at || '—')}</td>
-        <td>${escapeHtml(survey.submitted_by || '—')}</td>
-        <td>${escapeHtml(survey.overall_satisfaction || '—')}</td>
-      </tr>`;
-    })
-    .join('');
-
-  resultsEl.innerHTML = `
-    <table class="summary">
-      <thead>
-        <tr>
-          <th>Request #</th>
-          <th>Survey date</th>
-          <th>Customer</th>
-          <th>Request CSAT</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
-  `;
+  resultsEl.replaceChildren(
+    el(
+      'table',
+      { className: 'summary' },
+      el(
+        'thead',
+        {},
+        el(
+          'tr',
+          {},
+          el('th', {}, 'Request #'),
+          el('th', {}, 'Survey date'),
+          el('th', {}, 'Customer'),
+          el('th', {}, 'Request CSAT')
+        )
+      ),
+      el('tbody', {}, ...rows)
+    )
+  );
 }
 
 api.runtime.onMessage.addListener((message) => {
@@ -132,6 +166,8 @@ api.runtime.onMessage.addListener((message) => {
 async function ensureContentScripts(tabId) {
   if (!api.tabs?.executeScript) return;
   try {
+    await api.tabs.executeScript(tabId, { file: 'content/page-context.js' });
+    await api.tabs.executeScript(tabId, { file: 'content/request-number.js' });
     await api.tabs.executeScript(tabId, { file: 'content/scrape-utils.js' });
     await api.tabs.executeScript(tabId, { file: 'content/sf-api.js' });
     await api.tabs.executeScript(tabId, { file: 'content/appointment.js' });
@@ -142,16 +178,17 @@ async function ensureContentScripts(tabId) {
 
 async function loadSurveys() {
   const tab = await getActiveTab();
-  if (!isAppointmentUrl(tab?.url)) {
-    statusEl.textContent = 'Open an Appointment (REQ) page first.';
+  if (!isSurveyHostUrl(tab?.url)) {
+    statusEl.textContent = 'Open an Appointment (REQ) or Account page first.';
     retryBtn.hidden = true;
     return;
   }
 
   retryBtn.hidden = true;
   retryBtn.disabled = true;
-  resultsEl.innerHTML = '';
+  resultsEl.replaceChildren();
   accountEl.hidden = true;
+  if (avgEl) avgEl.hidden = true;
   statusEl.textContent = 'Loading survey list…';
 
   try {

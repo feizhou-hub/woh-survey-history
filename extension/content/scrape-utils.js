@@ -77,6 +77,14 @@ function parseAppointmentId(url) {
   return short ? short[1] : null;
 }
 
+function isAppointmentUrl(url = '') {
+  return window.WohPageContext.isAppointmentUrl(url);
+}
+
+function isAccountUrl(url = '') {
+  return window.WohPageContext.isAccountUrl(url);
+}
+
 /**
  * Find the Account lookup link on an Appointment Details page
  * (same link you click to open the Account record).
@@ -137,8 +145,19 @@ function namesMatch(a, b) {
   return leftParts === rightParts;
 }
 
+function cleanScrapedPersonName(raw) {
+  if (window.WohPrimaryNsc?.cleanPersonName) {
+    return window.WohPrimaryNsc.cleanPersonName(raw);
+  }
+  return String(raw || '')
+    .replace(/\b(Preview|Open|Show More|Edit|Clear Selection)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * Read Primary NSC Contact from the open Appointment page.
+ * Prefers Contact/User lookup links inside the field (shadow-DOM safe).
  */
 function findPrimaryNscContact() {
   const labeled =
@@ -147,8 +166,8 @@ function findPrimaryNscContact() {
     getFieldByLabel('NSC Contact');
 
   if (labeled?.value) {
-    const name = labeled.value.replace(/\bPreview\b/gi, '').trim();
-    if (name && !/^primary nsc/i.test(name)) {
+    const name = cleanScrapedPersonName(labeled.value);
+    if (name) {
       return {
         name,
         href: labeled.href || '',
@@ -158,12 +177,58 @@ function findPrimaryNscContact() {
     }
   }
 
-  const body = textOf(document.body);
-  const match = body.match(
-    /Primary NSC Contact\s+([A-Za-z][A-Za-z .'-]{1,80}?)\s+(?:Preview\s+)?Primary NSC Email/i
+  const fromNearLabel = findPrimaryNscContactNearLabel();
+  if (fromNearLabel) return fromNearLabel;
+
+  // document.body.innerText often misses Lightning shadow roots — walk instead
+  const chunks = [];
+  for (const el of walkElements(document)) {
+    if (el.children?.length) continue;
+    const t = textOf(el);
+    if (t) chunks.push(t);
+  }
+  const walked = chunks.join(' ').replace(/\s+/g, ' ');
+  const match = walked.match(
+    /Primary NSC Contact\s+((?:Open\s+)?[A-Za-z][A-Za-z .'-]{1,80}?)\s+(?:Preview\s+)?Primary NSC Email/i
   );
   if (match) {
-    return { name: match[1].trim(), href: '', id: '', source: 'body_text' };
+    const name = cleanScrapedPersonName(match[1]);
+    if (name) return { name, href: '', id: '', source: 'walked_text' };
+  }
+
+  return null;
+}
+
+function findPrimaryNscContactNearLabel() {
+  const labels = ['primary nsc contact', 'primary nsc', 'nsc contact'];
+  const elements = walkElements(document);
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    const text = textOf(el).toLowerCase();
+    if (!labels.includes(text)) continue;
+
+    const container =
+      el.closest('records-record-layout-item, .slds-form__item, [data-target-selection-name]') ||
+      el.parentElement;
+    const scope = container ? walkElements(container) : elements.slice(i, i + 60);
+
+    const contactLink = scope.find(
+      (node) =>
+        node.tagName === 'A' &&
+        /\/lightning\/r\/(Contact|User)\//i.test(node.href || '')
+    );
+    if (contactLink) {
+      const name = cleanScrapedPersonName(textOf(contactLink));
+      if (name) {
+        return {
+          name,
+          href: contactLink.href || '',
+          id: parseRecordId(contactLink.href) || '',
+          source: 'contact_link',
+        };
+      }
+    }
   }
 
   return null;
@@ -176,25 +241,40 @@ function findPrimaryNscContact() {
 function getFieldByLabel(labelText) {
   const normalized = labelText.toLowerCase();
   const elements = walkElements(document);
+  const preferContact = /contact/i.test(labelText) && !/account/i.test(labelText);
 
   for (const el of elements) {
     const text = textOf(el);
     if (!text) continue;
 
     // Lightning field: label element followed by value in sibling/parent structure
-    if (text.toLowerCase() === normalized || text.toLowerCase().startsWith(normalized + '\n')) {
+    // Note: textOf collapses whitespace, so exact label match is the reliable path.
+    if (text.toLowerCase() === normalized) {
       const container = el.closest('records-record-layout-item, .slds-form__item, [data-target-selection-name]') || el.parentElement;
       if (!container) continue;
 
+      // querySelector does not pierce nested shadow roots — walk instead
+      const inContainer = walkElements(container);
+      const links = inContainer.filter((node) => node.tagName === 'A' && node.href);
       const link =
-        container.querySelector('a[href*="/lightning/r/Account/"]') ||
-        container.querySelector('a[href*="/lightning/r/"]') ||
-        container.querySelector('a[href*="/"]');
-      const valueEl =
-        container.querySelector('[slot="outputField"], lightning-formatted-text, lightning-formatted-url, span.test-id__field-value, a') ||
-        container.querySelector('dd, .slds-form-element__static');
+        (preferContact &&
+          links.find((a) => /\/lightning\/r\/(Contact|User)\//i.test(a.href))) ||
+        links.find((a) => /\/lightning\/r\/Account\//i.test(a.href)) ||
+        links.find((a) => /\/lightning\/r\//i.test(a.href)) ||
+        links[0];
 
-      const value = textOf(valueEl) || textOf(link);
+      const valueEl =
+        inContainer.find((node) => node.getAttribute?.('slot') === 'outputField') ||
+        inContainer.find((node) =>
+          /^(LIGHTNING-FORMATTED-TEXT|LIGHTNING-FORMATTED-URL|LIGHTNING-FORMATTED-NAME)$/i.test(
+            node.tagName
+          )
+        ) ||
+        inContainer.find((node) => node.classList?.contains('test-id__field-value')) ||
+        link;
+
+      let value = textOf(valueEl) || textOf(link);
+      if (preferContact) value = cleanScrapedPersonName(value);
       if (value && value.toLowerCase() !== normalized) {
         return {
           label: labelText,
@@ -206,21 +286,29 @@ function getFieldByLabel(labelText) {
     }
   }
 
-  // Broader search: elements containing "Label\nValue" pattern
-  for (const el of elements) {
-    const text = textOf(el);
-    if (text.toLowerCase().startsWith(normalized)) {
-      const parts = text.split('\n').map((p) => p.trim()).filter(Boolean);
-      if (parts.length >= 2 && parts[0].toLowerCase() === normalized) {
-        const link = el.querySelector('a[href]');
-        return {
-          label: labelText,
-          value: parts.slice(1).join(' '),
-          href: link ? link.href : null,
-          id: parseRecordId(link?.href),
-        };
-      }
-    }
+  // Broader search: walked leaf texts near a label (shadow-safe stand-in for Label\nValue)
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (textOf(el).toLowerCase() !== normalized) continue;
+    const container =
+      el.closest('records-record-layout-item, .slds-form__item, [data-target-selection-name]') ||
+      el.parentElement;
+    if (!container) continue;
+    const leaves = walkElements(container)
+      .filter((node) => !node.children?.length)
+      .map((node) => textOf(node))
+      .filter(Boolean);
+    const valueParts = leaves.filter((t) => t.toLowerCase() !== normalized);
+    let value = valueParts.join(' ').replace(/\s+/g, ' ').trim();
+    if (preferContact) value = cleanScrapedPersonName(value);
+    if (!value) continue;
+    const link = walkElements(container).find((node) => node.tagName === 'A' && node.href);
+    return {
+      label: labelText,
+      value,
+      href: link ? link.href : null,
+      id: parseRecordId(link?.href),
+    };
   }
 
   return null;
@@ -311,36 +399,10 @@ function isFeedbackPage() {
 }
 
 function mapQuestionsToFields(questions) {
-  const result = {
-    overall_satisfaction: '',
-    consultant_satisfaction: '',
-    comments: '',
-  };
-
-  for (const { question, answer } of questions) {
-    const q = question.toLowerCase();
-    const qJa = question;
-    if (
-      (q.includes('overall') && (q.includes('request') || q.includes('experience'))) ||
-      /この\s*Ask-an-Expert|リクエストにどの程度満足|overall experience with this request/i.test(qJa)
-    ) {
-      result.overall_satisfaction = answer;
-    } else if (
-      q.includes('consultant') ||
-      /コンサルタントにどの程度満足|consultant\(s\) assigned/i.test(qJa)
-    ) {
-      result.consultant_satisfaction = answer;
-    } else if (
-      q.includes('positive') ||
-      q.includes('improvement') ||
-      q.includes('share') ||
-      /良かった点|改善すべき|エクスペリエンス/i.test(qJa)
-    ) {
-      result.comments = answer;
-    }
+  if (window.WohCsatParse?.mapQuestionsToFields) {
+    return window.WohCsatParse.mapQuestionsToFields(questions);
   }
-
-  return result;
+  return { overall_satisfaction: '', consultant_satisfaction: '', comments: '' };
 }
 
 /**
@@ -524,16 +586,9 @@ function parseFeedbackHtml(html) {
   const submittedLine = bodyText.match(
     /Submitted\s+(\d{1,2}\/\d{1,2}\/\d{4})\s+By:\s*(.+?)(?:\s+Request:|$)/i
   );
-  const reqMatch = bodyText.match(/REQ-\d+/i);
-
-  const englishAnswers =
-    'Very satisfied|Somewhat satisfied|Neither satisfied nor dissatisfied|Somewhat dissatisfied|Very dissatisfied|Satisfied|Dissatisfied';
-  const japaneseAnswers = '非常に満足|とても満足|大変満足|やや満足|満足|どちらでもない|やや不満|非常に不満|不満';
-  const frenchAnswers =
-    'Très satisfait|Tres satisfait|Très satisfaite|Satisfait|Satisfaite|Ni satisfait ni insatisfait|Peu satisfait|Pas satisfait|Insatisfait|Très insatisfait|Tres insatisfait';
-  const spanishAnswers =
-    'Muy satisfecho|Muy satisfecha|Satisfecho|Satisfecha|Ni satisfecho ni insatisfecho|Ni satisfecha ni insatisfecha|Poco satisfecho|Poco satisfecha|Algo insatisfecho|Algo insatisfecha|Insatisfecho|Insatisfecha|Muy insatisfecho|Muy insatisfecha';
-  const answerGroup = `(${englishAnswers}|${japaneseAnswers}|${frenchAnswers}|${spanishAnswers}|[1-5]\\s*stars?|[★]{1,5})`;
+  const reqMatch = window.WohRequestNumber?.extractAppointmentNumber
+    ? window.WohRequestNumber.extractAppointmentNumber(bodyText)
+    : bodyText.match(/\b(?:REQ|OPR)-\d+\b/i)?.[0] || '';
 
   const mapped = {
     overall_satisfaction: '',
@@ -549,126 +604,21 @@ function parseFeedbackHtml(html) {
   if (starRatings[0]) mapped.overall_satisfaction = starRatings[0];
   if (starRatings[1]) mapped.consultant_satisfaction = starRatings[1];
 
-  // 2) English / Japanese / French / Spanish Likert text answers
-  const overallPatterns = [
-    new RegExp(
-      `Overall,\\s*how satisfied were you with this Ask-an-Expert request\\?\\s*${answerGroup}`,
-      'i'
-    ),
-    new RegExp(`Please rate your overall experience with this request\\s*${answerGroup}`, 'i'),
-    /全体的に見て、この\s*Ask-an-Expert\s*リクエストにどの程度満足していますか？\s*(非常に満足|とても満足|大変満足|やや満足|満足|どちらでもない|やや不満|非常に不満|不満)/,
-    new RegExp(
-      `Dans l'ensemble, avez-vous été satisfait de cette demande de mise en contact avec un expert\\s*\\?\\s*${answerGroup}`,
-      'i'
-    ),
-    new RegExp(
-      `En general,?\\s*¿?está satisfech[oa] con esta solicitud(?: de contacto con un experto)?\\s*\\??\\s*${answerGroup}`,
-      'i'
-    ),
-  ];
-
-  const consultantPatterns = [
-    new RegExp(
-      `Overall,\\s*how satisfied were you with the consultant\\(s\\) assigned to this request\\?\\s*${answerGroup}`,
-      'i'
-    ),
-    new RegExp(`Please rate the consultant\\(s\\) assigned to this request\\s*${answerGroup}`, 'i'),
-    /全体的に見て、このリクエストに割り当てられたコンサルタントにどの程度満足していますか？\s*(非常に満足|とても満足|大変満足|やや満足|満足|どちらでもない|やや不満|非常に不満|不満)/,
-    new RegExp(
-      `Dans l'ensemble, avez-vous été satisfait du ou des consultants affectés à cette demande\\s*\\?\\s*${answerGroup}`,
-      'i'
-    ),
-    new RegExp(
-      `En general,?\\s*¿?está satisfech[oa] con (?:el |los |la |las )?consultor(?:es)?(?: asignad[oa]s? a esta solicitud)?\\s*\\??\\s*${answerGroup}`,
-      'i'
-    ),
-  ];
-
-  if (!mapped.overall_satisfaction) {
-    for (const re of overallPatterns) {
-      const m = bodyText.match(re);
-      if (m) {
-        mapped.overall_satisfaction = m[1].trim();
-        break;
-      }
-    }
+  // 2) Likert text answers (AAE, Optimization Package / OPR, JA/FR/ES)
+  if (!mapped.overall_satisfaction || !mapped.consultant_satisfaction) {
+    const fromText = window.WohCsatParse?.extractCsatFromBodyText
+      ? window.WohCsatParse.extractCsatFromBodyText(bodyText)
+      : { overall_satisfaction: '', consultant_satisfaction: '', comments: '' };
+    mapped.overall_satisfaction = mapped.overall_satisfaction || fromText.overall_satisfaction;
+    mapped.consultant_satisfaction = mapped.consultant_satisfaction || fromText.consultant_satisfaction;
+    mapped.comments = mapped.comments || fromText.comments;
   }
-  if (!mapped.consultant_satisfaction) {
-    for (const re of consultantPatterns) {
-      const m = bodyText.match(re);
-      if (m) {
-        mapped.consultant_satisfaction = m[1].trim();
-        break;
-      }
-    }
-  }
-
-  // Broader French / Spanish fallback near known answer tokens
-  const esLikert =
-    'Muy satisfech[oa]|Satisfech[oa]|Ni satisfecho ni insatisfecho|Ni satisfecha ni insatisfecha|Poco satisfech[oa]|Algo insatisfecho|Algo insatisfecha|Insatisfech[oa]|Muy insatisfecho|Muy insatisfecha';
-
-  if (!mapped.overall_satisfaction) {
-    const fr = bodyText.match(
-      /demande de mise en contact avec un expert\s*\?\s*(Très satisfait[ei]?|Satisfait[ei]?|Ni satisfait ni insatisfait|Peu satisfait|Pas satisfait|Insatisfait|Très insatisfait)/i
-    );
-    if (fr) mapped.overall_satisfaction = fr[1].trim();
-  }
-  if (!mapped.consultant_satisfaction) {
-    const fr = bodyText.match(
-      /consultants affectés à cette demande\s*\?\s*(Très satisfait[ei]?|Satisfait[ei]?|Ni satisfait ni insatisfait|Peu satisfait|Pas satisfait|Insatisfait|Très insatisfait)/i
-    );
-    if (fr) mapped.consultant_satisfaction = fr[1].trim();
-  }
-  if (!mapped.overall_satisfaction) {
-    const es = bodyText.match(
-      new RegExp(
-        `solicitud(?: de contacto con un experto)?\\s*\\??\\s*(${esLikert})`,
-        'i'
-      )
-    );
-    if (es) mapped.overall_satisfaction = es[1].trim();
-  }
-  if (!mapped.consultant_satisfaction) {
-    const es = bodyText.match(
-      new RegExp(
-        `consultor(?:es)?(?: asignad[oa]s? a esta solicitud)?\\s*\\??\\s*(${esLikert})`,
-        'i'
-      )
-    );
-    if (es) mapped.consultant_satisfaction = es[1].trim();
-  }
-
-  const commentsMatch =
-    bodyText.match(
-      /Please share what was positive about your experience and any areas for improvement\s*(.*?)(?=\s*Overall, how satisfied|Please rate|$)/i
-    ) ||
-    bodyText.match(
-      /あなたのエクスペリエンスにおいて良かった点や改善すべき点についてお聞かせください\s*(.+?)(?=\s*Overall|$)/
-    ) ||
-    bodyText.match(
-      /Merci de nous indiquer les aspects positifs de votre expérience et les éventuels points à améliorer\s*(.+?)(?=\s*Dans l'ensemble|$)/i
-    ) ||
-    bodyText.match(
-      /(?:Ind[ií]quenos|Por favor,? (?:ind[ií]quenos|comparta)).{0,80}(?:experiencia|mejora).{0,40}\s*(.+?)(?=\s*En general|$)/i
-    );
-  if (commentsMatch) mapped.comments = commentsMatch[1].trim();
 
   if (!mapped.overall_satisfaction || !mapped.consultant_satisfaction) {
     const fromDom = mapQuestionsToFields(scrapeFeedbackQuestionsFromRoot(doc));
     mapped.overall_satisfaction = mapped.overall_satisfaction || fromDom.overall_satisfaction;
     mapped.consultant_satisfaction = mapped.consultant_satisfaction || fromDom.consultant_satisfaction;
     mapped.comments = mapped.comments || fromDom.comments;
-  }
-
-  if (!mapped.overall_satisfaction || !mapped.consultant_satisfaction) {
-    const jaOverall = bodyText.match(
-      /リクエストにどの程度満足していますか？\s*(非常に満足|とても満足|大変満足|やや満足|満足|どちらでもない|やや不満|非常に不満|不満)/
-    );
-    const jaConsultant = bodyText.match(
-      /コンサルタントにどの程度満足していますか？\s*(非常に満足|とても満足|大変満足|やや満足|満足|どちらでもない|やや不満|非常に不満|不満)/
-    );
-    if (jaOverall) mapped.overall_satisfaction = mapped.overall_satisfaction || jaOverall[1];
-    if (jaConsultant) mapped.consultant_satisfaction = mapped.consultant_satisfaction || jaConsultant[1];
   }
 
   let consultantName = '';
@@ -686,7 +636,7 @@ function parseFeedbackHtml(html) {
   if (subMatch) subProduct = subMatch[1].trim();
 
   return {
-    req_number: reqMatch ? reqMatch[0] : '',
+    req_number: reqMatch || '',
     submitted_at: submittedLine ? submittedLine[1] : '',
     submitted_by: submittedLine ? submittedLine[2].trim() : '',
     consultant_name: consultantName,
@@ -752,6 +702,8 @@ window.WohScrape = {
   parseRecordId,
   parseAccountId,
   parseAppointmentId,
+  isAppointmentUrl,
+  isAccountUrl,
   getFieldByLabel,
   findAccountOnPage,
   findPrimaryNscContact,

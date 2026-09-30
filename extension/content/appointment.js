@@ -1,19 +1,42 @@
 /**
- * Runs on Appointment__c record pages.
- * Toolbar click → show persistent panel with Account's 10 newest surveys (12h cache).
+ * Runs on Appointment__c and Account record pages.
+ * Both pages call loadSurveysForPage(): resolve the Account, load its newest
+ * surveys (10 on an Appointment, 20 on an Account; 12h cache), then apply that page's summary.
+ * Appointment summary: Primary NSC Contact. Account summary: average Request CSAT.
  */
 
 (async function initAppointmentScraper() {
+  if (window.__wohAppointmentScraperInit) return;
+  window.__wohAppointmentScraperInit = true;
+
   const api = globalThis.browser ?? globalThis.chrome;
-  const { parseAppointmentId, findAccountOnPage, findPrimaryNscContact, namesMatch, parseFeedbackHtml, waitFor } =
+  const { parseAppointmentId, parseAccountId, findAccountOnPage, findPrimaryNscContact, namesMatch, parseFeedbackHtml, waitFor, getFieldByLabel } =
     window.WohScrape;
-  const { uiApiRecord, fieldValue, fieldDisplay, relatedListAll, fetchFeedbackHtml } = window.WohSfApi;
+  const { detectPageContext } = window.WohPageContext;
+  const { uiApiRecord, uiApiRecordFields, fieldValue, fieldDisplay, queryRecentSurveys, fetchFeedbackHtml } =
+    window.WohSfApi;
+  const { extractPrimaryNscFromUiRecord, PRIMARY_NSC_UI_FIELDS } = window.WohPrimaryNsc || {};
+  const { appointmentNameFromRelatedRecord, extractAppointmentNumber, isSurveyResultName, isAppNumber } =
+    window.WohRequestNumber || {};
+
+  function requestNumberOrBlank(...values) {
+    for (const value of values) {
+      const hit = extractAppointmentNumber?.(value);
+      if (hit) return hit;
+    }
+    return '';
+  }
   const panel = window.WohSurveyPanel;
 
-  const TOP_N = 10;
-  const RELATED_FIELDS = ['Id', 'Name', 'Appointment__c', 'Date_Time_Survey_Submitted__c', 'Survey_Author__c'];
+  const SURVEY_LIMIT = { appointment: 10, account: 20 };
+
+  function surveyLimit(pageContext) {
+    return SURVEY_LIMIT[pageContext] || SURVEY_LIMIT.appointment;
+  }
+  const INFLIGHT_STALE_MS = 90_000;
 
   let inflight = null;
+  let inflightStartedAt = 0;
 
   function emitProgress(text) {
     panel?.setStatus(text);
@@ -28,14 +51,66 @@
     return Number.isFinite(ms) ? ms : 0;
   }
 
+  async function resolvePrimaryNscFromApi(appointmentId) {
+    if (!extractPrimaryNscFromUiRecord || !uiApiRecordFields) return null;
+    try {
+      const fields = PRIMARY_NSC_UI_FIELDS || [
+        'Appointment__c.Primary_NSC_Contact__c',
+        'Appointment__c.User__c',
+        'Appointment__c.User__r.Name',
+      ];
+      const record = await uiApiRecordFields(appointmentId, fields);
+      return extractPrimaryNscFromUiRecord(record);
+    } catch (err) {
+      console.warn('[WOH Survey] Primary NSC UI API lookup failed', err);
+      return null;
+    }
+  }
+
+  async function resolveAccountRecord() {
+    const accountId = parseAccountId(location.href);
+    if (!accountId) {
+      throw new Error('Could not resolve Account from this page. Reload and try again.');
+    }
+
+    emitProgress('Loading Account…');
+    let accountName = '';
+    try {
+      const record = await uiApiRecord(accountId);
+      accountName = fieldDisplay(record, 'Name') || fieldValue(record, 'Name') || '';
+    } catch (err) {
+      console.warn('[WOH Survey] UI API account lookup failed', err);
+    }
+
+    if (!accountName && getFieldByLabel) {
+      const labeled = getFieldByLabel('Account Name') || getFieldByLabel('Account');
+      accountName = labeled?.value || '';
+    }
+
+    return {
+      accountId,
+      accountName,
+      appointmentName: '',
+      appointmentId: '',
+      accountHref: `${location.origin}/lightning/r/Account/${accountId}/view`,
+      source: 'account_page',
+      primaryNsc: null,
+    };
+  }
+
   async function resolveAccount(appointmentId) {
     emitProgress('Resolving Account…');
+
+    let primaryNsc = await resolvePrimaryNscFromApi(appointmentId);
 
     try {
       const record = await uiApiRecord(appointmentId);
       const accountId = fieldValue(record, 'Account__c');
       const accountName = fieldDisplay(record, 'Account__r') || fieldDisplay(record, 'Account__c');
       const appointmentName = fieldDisplay(record, 'Name');
+      if (!primaryNsc && extractPrimaryNscFromUiRecord) {
+        primaryNsc = extractPrimaryNscFromUiRecord(record);
+      }
       if (accountId) {
         return {
           accountId,
@@ -44,6 +119,7 @@
           appointmentId,
           accountHref: `${location.origin}/lightning/r/Account/${accountId}/view`,
           source: 'ui_api',
+          primaryNsc,
         };
       }
     } catch (err) {
@@ -65,6 +141,7 @@
         appointmentId,
         accountHref: fromPage.href || '',
         source: fromPage.source,
+        primaryNsc: primaryNsc || findPrimaryNscContact(),
       };
     }
 
@@ -73,17 +150,40 @@
     );
   }
 
-  async function loadRecentSurveyMeta(accountId) {
+  async function loadRecentSurveyMeta(accountId, limit) {
     emitProgress('Loading survey list for this account…');
-    const records = await relatedListAll(accountId, 'WOH_Survey_Results__r', RELATED_FIELDS);
+    const records = await queryRecentSurveys(accountId, limit);
     const sorted = [...records].sort((a, b) => sortKey(b) - sortKey(a));
-    return sorted.slice(0, TOP_N).map((record) => ({
-      survey_result_id: record.id,
-      survey_result_name: fieldValue(record, 'Name') || fieldDisplay(record, 'Name') || '',
-      appointment_id: fieldValue(record, 'Appointment__c') || '',
-      submitted_at_iso: fieldValue(record, 'Date_Time_Survey_Submitted__c') || '',
-      submitted_at_display: fieldDisplay(record, 'Date_Time_Survey_Submitted__c') || '',
-    }));
+    const recent = sorted.slice(0, limit).map((record) => {
+      const rawName = fieldDisplay(record, 'Appointment__c') || '';
+      const resolved = appointmentNameFromRelatedRecord
+        ? appointmentNameFromRelatedRecord(record)
+        : requestNumberOrBlank(rawName);
+      return {
+        survey_result_id: record.id,
+        survey_result_name: fieldValue(record, 'Name') || fieldDisplay(record, 'Name') || '',
+        appointment_id: fieldValue(record, 'Appointment__c') || '',
+        appointment_name: resolved,
+        appointment_labeled: Boolean(resolved || rawName),
+        submitted_at_iso: fieldValue(record, 'Date_Time_Survey_Submitted__c') || '',
+        submitted_at_display: fieldDisplay(record, 'Date_Time_Survey_Submitted__c') || '',
+      };
+    });
+
+    for (const meta of recent) {
+      if (meta.appointment_name || meta.appointment_labeled || !meta.appointment_id || !uiApiRecordFields) continue;
+      try {
+        const appt = await uiApiRecordFields(meta.appointment_id, ['Name']);
+        const name = fieldDisplay(appt, 'Name') || fieldValue(appt, 'Name') || '';
+        meta.appointment_name = window.WohRequestNumber?.usableAppointmentName
+          ? window.WohRequestNumber.usableAppointmentName(name)
+          : name;
+      } catch (_) {
+        /* keep empty; Request # will not fall back to WOH SR */
+      }
+    }
+
+    return recent;
   }
 
   async function scrapeOneSurvey(meta, account, index, total) {
@@ -98,13 +198,14 @@
         survey_result_id: meta.survey_result_id,
         survey_result_name: meta.survey_result_name,
         appointment_id: meta.appointment_id,
+        appointment_name: requestNumberOrBlank(meta.appointment_name, parsed.req_number),
         appointment_url: meta.appointment_id
           ? `${location.origin}/lightning/r/Appointment__c/${meta.appointment_id}/view`
           : '',
         account_id: account.accountId,
         account_name: account.accountName,
         feedback_url: url || feedbackUrl,
-        req_number: parsed.req_number,
+        req_number: requestNumberOrBlank(parsed.req_number, meta.appointment_name),
         submitted_at: parsed.submitted_at || meta.submitted_at_display,
         submitted_by: parsed.submitted_by,
         consultant_name: parsed.consultant_name,
@@ -128,13 +229,14 @@
           survey_result_id: meta.survey_result_id,
           survey_result_name: meta.survey_result_name,
           appointment_id: meta.appointment_id,
+          appointment_name: requestNumberOrBlank(meta.appointment_name, record.req_number),
           appointment_url: meta.appointment_id
             ? `${location.origin}/lightning/r/Appointment__c/${meta.appointment_id}/view`
             : '',
           account_id: account.accountId,
           account_name: account.accountName,
           feedback_url: feedbackUrl,
-          req_number: record.req_number || '',
+          req_number: requestNumberOrBlank(record.req_number, meta.appointment_name),
           submitted_at: record.submitted_at || meta.submitted_at_display,
           submitted_by: record.submitted_by || '',
           consultant_name: record.consultant_name || '',
@@ -150,9 +252,11 @@
           survey_result_id: meta.survey_result_id,
           survey_result_name: meta.survey_result_name,
           appointment_id: meta.appointment_id,
+          appointment_name: meta.appointment_name || '',
           account_id: account.accountId,
           account_name: account.accountName,
           feedback_url: feedbackUrl,
+          req_number: requestNumberOrBlank(meta.appointment_name),
           submitted_at: meta.submitted_at_display,
           error: String(fallbackErr.message || fallbackErr || err.message || err),
         };
@@ -160,16 +264,16 @@
     }
   }
 
-  async function fetchFreshSurveys(appointmentId) {
-    const account = await resolveAccount(appointmentId);
-    const recent = await loadRecentSurveyMeta(account.accountId);
+  async function fetchFreshSurveys(account, limit) {
+    const recent = await loadRecentSurveyMeta(account.accountId, limit);
     if (!recent.length) {
       const payload = {
         ok: true,
         account_id: account.accountId,
         account_name: account.accountName,
         account_href: account.accountHref || '',
-        appointment_id: appointmentId,
+        appointment_id: account.appointmentId || '',
+        survey_limit: limit,
         surveys: [],
         message: 'No WOH Survey Results found for this Account',
       };
@@ -188,15 +292,20 @@
       account_name: account.accountName,
       account_href: account.accountHref || '',
       account_source: account.source || '',
-      appointment_id: appointmentId,
+      appointment_id: account.appointmentId || '',
+      survey_limit: limit,
       surveys,
     };
     await panel.writeCache(account.accountId, payload);
     return payload;
   }
 
-  function withPrimaryNsc(payload) {
-    const primary = findPrimaryNscContact();
+  function resolvePrimaryNsc(account) {
+    return account?.primaryNsc || findPrimaryNscContact() || null;
+  }
+
+  function withPrimaryNsc(payload, primaryOverride = null) {
+    const primary = primaryOverride || findPrimaryNscContact();
     const primaryName = primary?.name || '';
     const surveys = (payload.surveys || []).map((survey) => ({
       ...survey,
@@ -207,6 +316,7 @@
       ...payload,
       primary_nsc_contact: primaryName,
       primary_nsc_matched: primaryInList,
+      primary_nsc_source: primary?.source || '',
       primary_nsc_notice:
         primaryName && !primaryInList
           ? `${primaryName} (Primary NSC Contact) has not submitted a survey in this recent list.`
@@ -215,33 +325,99 @@
     };
   }
 
-  async function showAccountSurveysPanel({ forceRefresh = false } = {}) {
-    const appointmentId = parseAppointmentId(location.href);
-    if (!appointmentId) {
-      throw new Error('Open an Appointment (REQ) record page first');
+  function withCsatAverage(payload) {
+    const summary = window.WohCsatParse?.averageCsatPoints
+      ? window.WohCsatParse.averageCsatPoints(payload.surveys || [])
+      : { average: null, count: 0, display: '', notice: '' };
+    return {
+      ...payload,
+      csat_average: summary.average,
+      csat_average_count: summary.count,
+      csat_average_display: summary.display || '',
+      csat_average_notice: summary.notice || '',
+    };
+  }
+
+  /**
+   * Same Account object for both pages. Account pages read the id from the URL.
+   * Appointment pages read Account__c (and Primary NSC) from the open request.
+   */
+  async function resolveAccountForPage(pageContext) {
+    if (pageContext === 'account') return resolveAccountRecord();
+    return resolveAccount(parseAppointmentId(location.href));
+  }
+
+  function limitSurveys(payload, limit) {
+    const surveys = payload?.surveys || [];
+    if (surveys.length <= limit) return payload;
+    return { ...payload, surveys: surveys.slice(0, limit) };
+  }
+
+  /** Page-specific summary on top of the shared survey list. */
+  function applyPageSummary(payload, pageContext, account) {
+    const next = {
+      ...limitSurveys(payload, surveyLimit(pageContext)),
+      page_context: pageContext || payload.page_context || 'appointment',
+    };
+    if (next.page_context === 'account') return withCsatAverage(next);
+    return withPrimaryNsc(next, resolvePrimaryNsc(account));
+  }
+
+  async function loadSurveysForPage({ forceRefresh = false } = {}) {
+    const pageContext = detectPageContext(location.href);
+    if (!pageContext) {
+      throw new Error('Open an Appointment (REQ) or Account record page first');
     }
 
     panel.setStatus('Resolving Account…');
-    const account = await resolveAccount(appointmentId);
+    const account = await resolveAccountForPage(pageContext);
+    const limit = surveyLimit(pageContext);
 
     if (!forceRefresh) {
       const cached = await panel.readCache(account.accountId);
-      if (cached?.payload) {
-        const decorated = withPrimaryNsc(cached.payload);
+      const payload = cached?.payload;
+      const staleWohSr =
+        payload &&
+        (payload.surveys || []).some((survey) => {
+          if (extractAppointmentNumber?.(survey.req_number) || extractAppointmentNumber?.(survey.appointment_name)) {
+            return false;
+          }
+          if (isAppNumber?.(survey.req_number) || isAppNumber?.(survey.appointment_name)) return true;
+          if (survey.appointment_name) return false;
+          if (!isSurveyResultName?.(survey.survey_result_name)) return false;
+          return !extractAppointmentNumber?.(survey.req_number);
+        });
+      const cachedLimit = Number.isFinite(payload?.survey_limit)
+        ? payload.survey_limit
+        : (payload?.surveys || []).length;
+      if (payload && !staleWohSr && cachedLimit >= limit) {
+        const decorated = applyPageSummary(payload, pageContext, account);
         panel.showPayload(decorated, { fromCache: true });
         return { ok: true, cached: true, ...decorated };
       }
     }
 
     panel.setStatus('Loading survey list…');
-    const payload = withPrimaryNsc(await fetchFreshSurveys(appointmentId));
+    const payload = applyPageSummary(await fetchFreshSurveys(account, limit), pageContext, account);
     panel.showPayload(payload, { fromCache: false });
     return payload;
   }
 
   async function runPanelFlow(options = {}) {
-    if (inflight) return inflight;
-    inflight = showAccountSurveysPanel(options)
+    const now = Date.now();
+    const stale = inflight && now - inflightStartedAt > INFLIGHT_STALE_MS;
+
+    if (inflight && !stale && !options.forceRefresh) {
+      return inflight;
+    }
+
+    if (inflight && (stale || options.forceRefresh)) {
+      inflight = null;
+    }
+
+    panel?.setStatus?.('Loading surveys…');
+    inflightStartedAt = now;
+    inflight = loadSurveysForPage(options)
       .catch((err) => {
         panel.showError(err.message || err);
         return { ok: false, error: String(err.message || err) };
@@ -253,15 +429,12 @@
   }
 
   api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === 'SHOW_ACCOUNT_SURVEYS_PANEL' || message.type === 'REQUEST_ACCOUNT_SURVEYS') {
-      runPanelFlow({ forceRefresh: Boolean(message.forceRefresh) })
-        .then((data) => sendResponse(data))
-        .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
-      return true;
-    }
-
-    // Legacy popup support
-    if (message.type === 'SHOW_ACCOUNT_SURVEYS') {
+    if (
+      message.type === 'SHOW_ACCOUNT_SURVEYS_PANEL' ||
+      message.type === 'REQUEST_ACCOUNT_SURVEYS' ||
+      message.type === 'SHOW_ACCOUNT_SURVEYS'
+    ) {
+      panel?.setStatus?.('Loading surveys…');
       runPanelFlow({ forceRefresh: Boolean(message.forceRefresh) })
         .then((data) => sendResponse(data))
         .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
@@ -269,7 +442,12 @@
     }
 
     if (message.type === 'PING_APPOINTMENT') {
-      sendResponse({ ok: true, appointmentId: parseAppointmentId(location.href) });
+      sendResponse({
+        ok: true,
+        appointmentId: parseAppointmentId(location.href),
+        accountId: parseAccountId(location.href),
+        page_context: detectPageContext(location.href),
+      });
       return false;
     }
   });

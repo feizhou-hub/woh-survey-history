@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>WOH Account Surveys</title>
+    <title>Survey History Tracking</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -43,11 +43,43 @@
         min-height: 18px;
         color: #444;
       }
+      .account-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .account-line:not(:has(*:not([hidden]))) { display: none; }
       .account {
         font-size: 12px;
         color: #333;
-        margin-bottom: 10px;
         font-weight: 600;
+        min-width: 0;
+      }
+      .avg-badge {
+        flex: none;
+        width: 64px;
+        height: 64px;
+        margin-left: auto;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #d4edda;
+        color: #1f1f1f;
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1;
+        box-shadow: inset 0 0 0 2px #b7dfc4;
+      }
+      .avg-badge.mid {
+        background: #fff3cd;
+        box-shadow: inset 0 0 0 2px #ffe08a;
+      }
+      .avg-badge.low {
+        background: #f8d7da;
+        box-shadow: inset 0 0 0 2px #f1b0b7;
       }
       .meta {
         font-size: 11px;
@@ -115,12 +147,18 @@
     </style>
   </head>
   <body>
-    <h1>WOH Account Surveys</h1>
-    <div class="subtitle">10 most recent surveys for this Account</div>
+    <h1>Survey History Tracking</h1>
+    <div class="subtitle" id="subtitle">Most recent surveys for this Account</div>
     <div id="status" class="status">Loading…</div>
     <button id="retryBtn" hidden>Retry</button>
-    <div id="account" class="account" hidden></div>
+    <div class="account-line">
+      <div id="account" class="account" hidden></div>
+      <div id="avg" class="avg-badge" hidden></div>
+    </div>
     <div id="results"></div>
+    <script src="../content/page-context.js"></script>
+    <script src="../content/html-text.js"></script>
+    <script src="../content/request-number.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

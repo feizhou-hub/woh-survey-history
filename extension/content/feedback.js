@@ -24,7 +24,8 @@
     const mapped = mapQuestionsToFields(questions);
 
     const submittedLine = textOf(document.body).match(/Submitted\s+(\d{1,2}\/\d{1,2}\/\d{4})\s+By:\s*([^\n]+)/i);
-    const reqLink = findLinkByText('REQ-', { partial: true });
+    const reqLink =
+      findLinkByText('REQ-', { partial: true }) || findLinkByText('OPR-', { partial: true });
     const consultantField = getFieldByLabel('Consultants') || getFieldByLabel('Consultant');
 
     return {

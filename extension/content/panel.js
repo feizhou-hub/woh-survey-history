@@ -8,12 +8,202 @@
   const CACHE_KEY = 'accountSurveyCache';
   const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
-  function escapeHtml(value) {
-    return String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+  const PANEL_CSS = `
+        :host { all: initial; }
+        .panel {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          width: min(560px, calc(100vw - 32px));
+          max-height: calc(100vh - 96px);
+          overflow: auto;
+          background: #fff;
+          color: #1f1f1f;
+          border-radius: 12px;
+          box-shadow: 0 8px 28px rgba(0,0,0,.22);
+          border: 1px solid #e5e5e5;
+        }
+        .header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 12px 14px 8px;
+          border-bottom: 1px solid #eee;
+          position: sticky;
+          top: 0;
+          background: #fff;
+          z-index: 1;
+        }
+        .title { font-size: 15px; font-weight: 700; margin: 0; }
+        .subtitle { font-size: 12px; color: #666; margin: 2px 0 0; }
+        .account-row { margin-top: 6px; }
+        .account { font-size: 12px; font-weight: 600; color: #333; min-width: 0; }
+        .avg-badge {
+          flex: none;
+          align-self: center;
+          width: 72px;
+          height: 72px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #d4edda;
+          color: #1f1f1f;
+          font-size: 16px;
+          font-weight: 800;
+          letter-spacing: -0.03em;
+          line-height: 1;
+          box-shadow: inset 0 0 0 2px #b7dfc4;
+        }
+        .avg-badge.mid {
+          background: #fff3cd;
+          box-shadow: inset 0 0 0 2px #ffe08a;
+        }
+        .avg-badge.low {
+          background: #f8d7da;
+          box-shadow: inset 0 0 0 2px #f1b0b7;
+        }
+        .close {
+          border: none;
+          background: transparent;
+          font-size: 22px;
+          line-height: 1;
+          cursor: pointer;
+          color: #666;
+          padding: 0 4px;
+          border-radius: 6px;
+          align-self: flex-start;
+        }
+        .close:hover { background: #f0f0f0; color: #111; }
+        .body { padding: 10px 14px 14px; }
+        .status-line { font-size: 12px; color: #555; margin-bottom: 8px; }
+        .cache { font-size: 11px; color: #666; margin-bottom: 8px; }
+        .notice {
+          font-size: 12px;
+          margin: 0 0 10px;
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: #fff4e5;
+          border: 1px solid #f0d2a0;
+          color: #6a4b00;
+          line-height: 1.35;
+        }
+        .notice.ok {
+          background: #e8f5e9;
+          border-color: #a5d6a7;
+          color: #1b5e20;
+        }
+        .trend {
+          margin: 0 0 12px;
+          padding: 8px 8px 2px;
+          border: 1px solid #e5e5e5;
+          border-radius: 8px;
+          background: #fafafa;
+        }
+        .trend-title {
+          font-size: 11px;
+          font-weight: 700;
+          color: #333;
+          margin: 0 0 4px;
+        }
+        .trend-body {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+        }
+        .trend svg {
+          display: block;
+          flex: 1 1 auto;
+          min-width: 0;
+          width: 100%;
+          height: auto;
+        }
+        .trend-series { cursor: pointer; }
+        .trend.contact-focus .trend-series { opacity: 0.28; }
+        .trend.contact-focus .trend-series.is-hot { opacity: 1; }
+        tbody.contact-focus tr:not(.contact-hot) td { opacity: 0.35; }
+        tr.contact-hot td { box-shadow: inset 0 2px 0 #0176d3, inset 0 -2px 0 #0176d3; }
+        tr.contact-hot td:first-child { box-shadow: inset 4px 0 0 #0176d3, inset 0 2px 0 #0176d3, inset 0 -2px 0 #0176d3; }
+        tr.contact-hot td:last-child { box-shadow: inset -2px 0 0 #0176d3, inset 0 2px 0 #0176d3, inset 0 -2px 0 #0176d3; }
+        .trend-legend {
+          display: flex;
+          flex-direction: column;
+          flex: 0 0 auto;
+          width: max-content;
+          max-width: 120px;
+          gap: 1px;
+          margin: 0;
+          padding-top: 2px;
+        }
+        .trend-legend span {
+          display: flex;
+          align-items: flex-start;
+          gap: 5px;
+          font-size: 10px;
+          color: #333;
+          line-height: 1.35;
+          cursor: pointer;
+          border-radius: 3px;
+          padding: 2px 3px;
+        }
+        .trend.contact-focus .trend-legend span { opacity: 0.45; }
+        .trend.contact-focus .trend-legend span.is-hot {
+          opacity: 1;
+          background: #e3f2fd;
+        }
+        .trend-swatch {
+          width: 12px;
+          height: 3px;
+          margin-top: 4px;
+          border-radius: 2px;
+          flex: none;
+        }
+        .primary-nsc { font-weight: 700; }
+        .linkish {
+          border: none;
+          background: none;
+          color: #0176d3;
+          cursor: pointer;
+          padding: 0;
+          font-size: 11px;
+          text-decoration: underline;
+        }
+        .results-toggle {
+          display: inline-block;
+          margin: 0 0 10px;
+          font-size: 13px;
+        }
+        .results-block[hidden] { display: none; }
+        .error { color: #b00020; font-size: 13px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th {
+          text-align: left;
+          font-size: 11px;
+          color: #555;
+          padding: 6px 8px;
+          border-bottom: 1px solid #ddd;
+          background: #f7f7f7;
+        }
+        td { padding: 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+        a { color: #0176d3; font-weight: 600; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        tr.csat-green td { background: #d4edda; }
+        tr.csat-yellow td { background: #fff3cd; }
+        tr.csat-red td { background: #f8d7da; }
+        tr.csat-error td { background: #f5f5f5; color: #666; }
+  `;
+
+  function el(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value == null || value === false) continue;
+      if (key === 'className') node.className = value;
+      else node.setAttribute(key, String(value));
+    }
+    for (const child of children) {
+      if (child == null || child === false) continue;
+      node.append(child);
+    }
+    return node;
   }
 
   function csatRowClass(overallSatisfaction) {
@@ -71,197 +261,547 @@
     document.getElementById(PANEL_ID)?.remove();
   }
 
+  function reqNode(survey, { errorRow = false } = {}) {
+    const label = window.WohRequestNumber?.requestNumberLabel
+      ? window.WohRequestNumber.requestNumberLabel(survey)
+      : survey.req_number || survey.appointment_name || '—';
+    const href = errorRow
+      ? survey.feedback_url || survey.appointment_url || ''
+      : survey.feedback_url || '';
+    if (href) {
+      return el('a', { href, target: '_blank', rel: 'noreferrer' }, label);
+    }
+    return label;
+  }
+
+  function customerNode(survey) {
+    const name = survey.submitted_by || '—';
+    if (survey.is_primary_nsc) {
+      return el('strong', { className: 'primary-nsc' }, name);
+    }
+    return name;
+  }
+
+  function primaryNoticeNode(payload) {
+    if (payload?.primary_nsc_contact && payload?.primary_nsc_matched) {
+      return el(
+        'div',
+        { className: 'notice ok' },
+        'Primary NSC Contact ',
+        el('strong', {}, payload.primary_nsc_contact),
+        ' appears in this list (bold).'
+      );
+    }
+    if (payload?.primary_nsc_contact) {
+      return el(
+        'div',
+        { className: 'notice' },
+        payload.primary_nsc_notice ||
+          `${payload.primary_nsc_contact} (Primary NSC Contact) has not submitted a survey in this recent list.`
+      );
+    }
+    return el('div', { className: 'notice' }, 'Primary NSC Contact not found on this request.');
+  }
+
+  function averageTone(display) {
+    const score = Number(display);
+    if (score > 4.5) return 'good';
+    if (score >= 4.2) return 'mid';
+    return 'low';
+  }
+
+  function accountAverageNode(payload) {
+    if (payload?.page_context !== 'account') return null;
+    const display = payload?.csat_average_display;
+    if (!display) return null;
+    const tone = averageTone(display);
+    return el(
+      'div',
+      {
+        className: tone === 'good' ? 'avg-badge' : `avg-badge ${tone}`,
+        title: `Average ${display}/5`,
+        'aria-label': `Average ${display} out of 5`,
+      },
+      `${display}/5`
+    );
+  }
+
+  function contextNoticeNode(payload) {
+    if (payload?.page_context === 'account') return null;
+    return primaryNoticeNode(payload);
+  }
+
+  function svgEl(tag, attrs = {}, ...children) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value == null || value === false) continue;
+      node.setAttribute(key, String(value));
+    }
+    for (const child of children) {
+      if (child == null || child === false) continue;
+      node.append(child);
+    }
+    return node;
+  }
+
+  const CONTACT_COLORS = [
+    '#1b7f3a',
+    '#c62828',
+    '#6a1b9a',
+    '#ef6c00',
+    '#00838f',
+    '#3949ab',
+    '#ad1457',
+    '#6d4c41',
+    '#00897b',
+    '#7cb342',
+    '#5e35b1',
+    '#f9a825',
+  ];
+
+  function contactColor(index) {
+    return CONTACT_COLORS[index % CONTACT_COLORS.length];
+  }
+
+  function shortTrendDate(raw) {
+    const text = String(raw || '').trim();
+    const mdy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (mdy) return `${Number(mdy[1])}/${Number(mdy[2])}`;
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) return `${Number(iso[2])}/${Number(iso[3])}`;
+    return text.slice(0, 10);
+  }
+
+  function trendSource(payload) {
+    if (payload?.page_context === 'account') {
+      return { surveys: payload.surveys || [], title: 'Request CSAT trend by contact' };
+    }
+    if (payload?.page_context !== 'appointment') return null;
+    const name = String(payload.primary_nsc_contact || '').trim();
+    if (!name) return null;
+    const namesMatch = window.WohScrape?.namesMatch;
+    const surveys = (payload.surveys || []).filter((survey) => {
+      if (namesMatch) return namesMatch(survey?.submitted_by, name);
+      return String(survey?.submitted_by || '').replace(/\s+/g, ' ').trim().toLowerCase() === name.toLowerCase();
+    });
+    return { surveys, title: 'Request CSAT trend' };
+  }
+
+  function trendChartNode(payload) {
+    const source = trendSource(payload);
+    if (!source) return null;
+    const trend = window.WohCsatParse?.csatTrendByContact
+      ? window.WohCsatParse.csatTrendByContact(source.surveys)
+      : { points: [], series: [] };
+    const points = trend.points || [];
+    const series = trend.series || [];
+    if (!points.length) return null;
+
+    const width = 520;
+    const height = 176;
+    const left = 32;
+    const right = 36;
+    const top = 12;
+    const bottom = 42;
+    const plotW = width - left - right;
+    const plotH = height - top - bottom;
+    const xAt = (index) =>
+      points.length === 1 ? left + plotW / 2 : left + (index * plotW) / (points.length - 1);
+    const yAt = (score) => top + ((5 - score) / 4) * plotH;
+    const average = points.reduce((sum, point) => sum + point.score, 0) / points.length;
+    const parts = [];
+
+    for (let score = 1; score <= 5; score += 1) {
+      const y = yAt(score);
+      parts.push(
+        svgEl('line', {
+          x1: left,
+          y1: y,
+          x2: left + plotW,
+          y2: y,
+          stroke: '#e6e6e6',
+          'stroke-width': 1,
+          'pointer-events': 'none',
+        }),
+        svgEl(
+          'text',
+          {
+            x: left - 6,
+            y: y + 3,
+            'text-anchor': 'end',
+            fill: '#777',
+            'font-size': 10,
+            'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+            'pointer-events': 'none',
+          },
+          String(score)
+        )
+      );
+    }
+
+    parts.push(
+      svgEl('line', {
+        x1: left,
+        y1: yAt(average),
+        x2: left + plotW,
+        y2: yAt(average),
+        stroke: '#0176d3',
+        'stroke-width': 1.25,
+        'stroke-dasharray': '4 3',
+        'pointer-events': 'none',
+      })
+    );
+
+    series.forEach((entry, seriesIndex) => {
+      const color = contactColor(seriesIndex);
+      const coords = entry.points.map((point) => `${xAt(point.index)},${yAt(point.score)}`).join(' ');
+      const seriesNodes = [];
+      if (entry.points.length > 1) {
+        seriesNodes.push(
+          svgEl('polyline', {
+            points: coords,
+            fill: 'none',
+            stroke: color,
+            'stroke-width': 1.75,
+            'stroke-linejoin': 'round',
+            'stroke-linecap': 'round',
+            'pointer-events': 'none',
+          }),
+          svgEl('polyline', {
+            class: 'trend-hit',
+            points: coords,
+            fill: 'none',
+            stroke: 'transparent',
+            'stroke-width': 14,
+            'stroke-linejoin': 'round',
+            'stroke-linecap': 'round',
+            'pointer-events': 'stroke',
+          })
+        );
+      }
+      entry.points.forEach((point) => {
+        const tip = [contactFirstName(point.contact), point.date, point.label, String(point.score)].filter(Boolean).join(' · ');
+        seriesNodes.push(
+          svgEl('circle', {
+            class: 'trend-hit',
+            cx: xAt(point.index),
+            cy: yAt(point.score),
+            r: 9,
+            fill: 'transparent',
+            stroke: 'none',
+            'pointer-events': 'fill',
+          }),
+          svgEl(
+            'circle',
+            {
+              cx: xAt(point.index),
+              cy: yAt(point.score),
+              r: 4,
+              fill: color,
+              stroke: '#fff',
+              'stroke-width': 1.5,
+              'pointer-events': 'none',
+            },
+            svgEl('title', {}, tip)
+          )
+        );
+      });
+      parts.push(
+        svgEl('g', { class: 'trend-series', 'data-contact': entry.contact }, ...seriesNodes)
+      );
+    });
+
+    let lastLabelX = -Infinity;
+    points.forEach((point, index) => {
+      const dateLabel = shortTrendDate(point.date);
+      const previousLabel = index > 0 ? shortTrendDate(points[index - 1].date) : '';
+      if (!dateLabel || dateLabel === previousLabel) return;
+      const x = xAt(index);
+      const isLast = index === points.length - 1;
+      if (!isLast && x - lastLabelX < 28) return;
+      lastLabelX = x;
+      const labelY = top + plotH + 12;
+      parts.push(
+        svgEl(
+          'text',
+          {
+            x,
+            y: labelY,
+            transform: `rotate(50 ${x} ${labelY})`,
+            'text-anchor': 'start',
+            fill: '#666',
+            'font-size': 10,
+            'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+            'pointer-events': 'none',
+          },
+          dateLabel
+        )
+      );
+    });
+
+    const aria = series
+      .map((entry) => `${contactFirstName(entry.contact)}: ${entry.points.map((point) => point.score).join(', ')}`)
+      .join('. ');
+    const svg = svgEl(
+      'svg',
+      {
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': `${source.title}. ${aria}. Average ${average.toFixed(1)}.`,
+      },
+      ...parts
+    );
+
+    const legend = el(
+      'div',
+      { className: 'trend-legend' },
+      ...series.map((entry, seriesIndex) =>
+        el(
+          'span',
+          { 'data-contact': entry.contact },
+          el('i', { className: 'trend-swatch', style: `background:${contactColor(seriesIndex)}` }),
+          contactFirstName(entry.contact)
+        )
+      )
+    );
+
+    return el(
+      'div',
+      { className: 'trend' },
+      el('p', { className: 'trend-title' }, source.title),
+      el('div', { className: 'trend-body' }, svg, legend)
+    );
+  }
+
+  function contactFirstName(name) {
+    const text = String(name || '').replace(/\s+/g, ' ').trim();
+    if (!text || text === 'Unknown') return text || 'Unknown';
+    if (text.includes(',')) {
+      const given = text.split(',').slice(1).join(' ').trim();
+      if (given) return given.split(/\s+/)[0];
+    }
+    return text.split(/\s+/)[0];
+  }
+
+  function rowContact(survey) {
+    const name = String(survey?.submitted_by || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return name || 'Unknown';
+  }
+
+  function surveyRow(survey) {
+    const contact = rowContact(survey);
+    if (!survey.ok) {
+      return el(
+        'tr',
+        { className: 'csat-error', 'data-contact': contact },
+        el('td', {}, reqNode(survey, { errorRow: true })),
+        el('td', {}, survey.submitted_at || '—'),
+        el('td', {}, customerNode(survey)),
+        el('td', {}, survey.error || 'Failed')
+      );
+    }
+    const csat =
+      (window.WohScrape?.formatCsatEnglish
+        ? window.WohScrape.formatCsatEnglish(survey.overall_satisfaction)
+        : survey.overall_satisfaction) || '—';
+    return el(
+      'tr',
+      { className: csatRowClass(survey.overall_satisfaction), 'data-contact': contact },
+      el('td', {}, reqNode(survey)),
+      el('td', {}, survey.submitted_at || '—'),
+      el('td', {}, customerNode(survey)),
+      el('td', {}, csat)
+    );
+  }
+
+  function surveyTableNode(payload) {
+    return el(
+      'table',
+      {},
+      el(
+        'thead',
+        {},
+        el(
+          'tr',
+          {},
+          el('th', {}, 'Request #'),
+          el('th', {}, 'Survey date'),
+          el('th', {}, 'Customer'),
+          el('th', {}, 'Request CSAT')
+        )
+      ),
+      el('tbody', {}, ...(payload.surveys || []).map(surveyRow))
+    );
+  }
+
+  function bodyNodes({ statusText, payload, fromCache, error }) {
+    if (error) {
+      return [el('div', { className: 'error' }, String(error))];
+    }
+    if (!payload) {
+      return [el('div', { className: 'status-line' }, statusText || 'Loading…')];
+    }
+    if (!(payload.surveys || []).length) {
+      const nodes = [el('div', { className: 'status-line' }, payload.message || 'No surveys found.')];
+      if (payload.page_context !== 'account') {
+        nodes.push(primaryNoticeNode(payload));
+      }
+      return nodes;
+    }
+    const nodes = [el('div', { className: 'status-line' }, statusText || '')];
+    if (fromCache) {
+      nodes.push(
+        el(
+          'div',
+          { className: 'cache' },
+          'Cached result (valid up to 12 hours). ',
+          el('button', { type: 'button', className: 'linkish', id: 'woh-refresh' }, 'Refresh now')
+        )
+      );
+    }
+    nodes.push(contextNoticeNode(payload));
+    nodes.push(trendChartNode(payload));
+    const table = surveyTableNode(payload);
+    if (payload.page_context === 'account') {
+      const count = (payload.surveys || []).length;
+      nodes.push(
+        el(
+          'button',
+          { type: 'button', className: 'linkish results-toggle', id: 'woh-results-toggle' },
+          `Show ${count} survey results`
+        ),
+        el('div', { className: 'results-block', hidden: true }, table)
+      );
+    } else {
+      nodes.push(table);
+    }
+    return nodes;
+  }
+
   function renderPanel({ statusText, payload, fromCache, error }) {
     const host = ensureHost();
     const root = host.shadowRoot;
+    const decodeText = window.WohHtmlText?.decodeHtmlEntities || ((text) => String(text ?? ''));
+    const accountName = payload?.account_name ? decodeText(payload.account_name) : '';
     const accountLabel = payload
-      ? payload.account_name
-        ? `${payload.account_name} (${payload.account_id || ''})`
+      ? accountName
+        ? `${accountName} (${payload.account_id || ''})`
         : payload.account_id || ''
       : '';
 
-    const cacheNote = fromCache
-      ? `<div class="cache">Cached result (valid up to 12 hours). <button type="button" class="linkish" id="woh-refresh">Refresh now</button></div>`
-      : '';
+    const headerText = el(
+      'div',
+      {},
+      el('p', { className: 'title' }, 'Survey History Tracking'),
+      el(
+        'p',
+        { className: 'subtitle' },
+        payload?.page_context === 'account'
+          ? '20 most recent surveys for this Account'
+          : payload?.page_context === 'appointment'
+            ? '10 most recent surveys for this Account'
+            : 'Most recent surveys for this Account'
+      ),
+      accountLabel
+        ? el('div', { className: 'account-row' }, el('div', { className: 'account' }, `Account: ${accountLabel}`))
+        : null
+    );
 
-    const primaryNotice =
-      payload?.primary_nsc_notice
-        ? `<div class="notice">${escapeHtml(payload.primary_nsc_notice)}</div>`
-        : payload?.primary_nsc_contact && payload?.primary_nsc_matched
-          ? `<div class="notice ok">Primary NSC Contact <strong>${escapeHtml(payload.primary_nsc_contact)}</strong> appears in this list (bold).</div>`
-          : payload?.primary_nsc_contact
-            ? ''
-            : `<div class="notice">Primary NSC Contact not found on this request.</div>`;
+    const panel = el(
+      'div',
+      { className: 'panel', role: 'dialog', 'aria-label': 'Survey History Tracking' },
+      el(
+        'div',
+        { className: 'header' },
+        headerText,
+        accountAverageNode(payload),
+        el('button', { type: 'button', className: 'close', id: 'woh-close', title: 'Close', 'aria-label': 'Close' }, '×')
+      ),
+      el('div', { className: 'body' }, ...bodyNodes({ statusText, payload, fromCache, error }))
+    );
 
-    let bodyHtml = '';
-    if (error) {
-      bodyHtml = `<div class="error">${escapeHtml(error)}</div>`;
-    } else if (!payload) {
-      bodyHtml = `<div class="status-line">${escapeHtml(statusText || 'Loading…')}</div>`;
-    } else if (!(payload.surveys || []).length) {
-      bodyHtml = `
-        <div class="status-line">${escapeHtml(payload.message || 'No surveys found.')}</div>
-        ${primaryNotice}
-      `;
-    } else {
-      const rows = (payload.surveys || [])
-        .map((survey) => {
-          const customerName = escapeHtml(survey.submitted_by || '—');
-          const customerCell = survey.is_primary_nsc
-            ? `<strong class="primary-nsc">${customerName}</strong>`
-            : customerName;
-
-          if (!survey.ok) {
-            const label = escapeHtml(survey.req_number || survey.survey_result_name || '—');
-            const href = survey.feedback_url || survey.appointment_url || '';
-            const reqCell = href
-              ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${label}</a>`
-              : label;
-            return `<tr class="csat-error">
-              <td>${reqCell}</td>
-              <td>${escapeHtml(survey.submitted_at || '—')}</td>
-              <td>${customerCell}</td>
-              <td>${escapeHtml(survey.error || 'Failed')}</td>
-            </tr>`;
-          }
-          const reqLabel = escapeHtml(survey.req_number || survey.survey_result_name || '—');
-          const detailUrl = survey.feedback_url || '';
-          const reqCell = detailUrl
-            ? `<a href="${escapeHtml(detailUrl)}" target="_blank" rel="noreferrer">${reqLabel}</a>`
-            : reqLabel;
-          return `<tr class="${csatRowClass(survey.overall_satisfaction)}">
-            <td>${reqCell}</td>
-            <td>${escapeHtml(survey.submitted_at || '—')}</td>
-            <td>${customerCell}</td>
-            <td>${escapeHtml(
-              (window.WohScrape?.formatCsatEnglish
-                ? window.WohScrape.formatCsatEnglish(survey.overall_satisfaction)
-                : survey.overall_satisfaction) || '—'
-            )}</td>
-          </tr>`;
-        })
-        .join('');
-
-      bodyHtml = `
-        <div class="status-line">${escapeHtml(statusText || '')}</div>
-        ${cacheNote}
-        ${primaryNotice}
-        <table>
-          <thead>
-            <tr>
-              <th>Request #</th>
-              <th>Survey date</th>
-              <th>Customer</th>
-              <th>Request CSAT</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
-    }
-
-    root.innerHTML = `
-      <style>
-        :host { all: initial; }
-        .panel {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          width: min(560px, calc(100vw - 32px));
-          max-height: calc(100vh - 96px);
-          overflow: auto;
-          background: #fff;
-          color: #1f1f1f;
-          border-radius: 12px;
-          box-shadow: 0 8px 28px rgba(0,0,0,.22);
-          border: 1px solid #e5e5e5;
-        }
-        .header {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          padding: 12px 14px 8px;
-          border-bottom: 1px solid #eee;
-          position: sticky;
-          top: 0;
-          background: #fff;
-          z-index: 1;
-        }
-        .title { font-size: 15px; font-weight: 700; margin: 0; }
-        .subtitle { font-size: 12px; color: #666; margin: 2px 0 0; }
-        .account { font-size: 12px; font-weight: 600; margin-top: 6px; color: #333; }
-        .close {
-          border: none;
-          background: transparent;
-          font-size: 22px;
-          line-height: 1;
-          cursor: pointer;
-          color: #666;
-          padding: 0 4px;
-          border-radius: 6px;
-        }
-        .close:hover { background: #f0f0f0; color: #111; }
-        .body { padding: 10px 14px 14px; }
-        .status-line { font-size: 12px; color: #555; margin-bottom: 8px; }
-        .cache { font-size: 11px; color: #666; margin-bottom: 8px; }
-        .notice {
-          font-size: 12px;
-          margin: 0 0 10px;
-          padding: 8px 10px;
-          border-radius: 8px;
-          background: #fff4e5;
-          border: 1px solid #f0d2a0;
-          color: #6a4b00;
-          line-height: 1.35;
-        }
-        .notice.ok {
-          background: #e8f5e9;
-          border-color: #a5d6a7;
-          color: #1b5e20;
-        }
-        .primary-nsc { font-weight: 700; }
-        .linkish {
-          border: none;
-          background: none;
-          color: #0176d3;
-          cursor: pointer;
-          padding: 0;
-          font-size: 11px;
-          text-decoration: underline;
-        }
-        .error { color: #b00020; font-size: 13px; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        th {
-          text-align: left;
-          font-size: 11px;
-          color: #555;
-          padding: 6px 8px;
-          border-bottom: 1px solid #ddd;
-          background: #f7f7f7;
-        }
-        td { padding: 8px; border-bottom: 1px solid #eee; vertical-align: top; }
-        a { color: #0176d3; font-weight: 600; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        tr.csat-green td { background: #d4edda; }
-        tr.csat-yellow td { background: #fff3cd; }
-        tr.csat-red td { background: #f8d7da; }
-        tr.csat-error td { background: #f5f5f5; color: #666; }
-      </style>
-      <div class="panel" role="dialog" aria-label="WOH Account Surveys">
-        <div class="header">
-          <div>
-            <p class="title">WOH Account Surveys</p>
-            <p class="subtitle">10 most recent surveys for this Account</p>
-            ${accountLabel ? `<div class="account">Account: ${escapeHtml(accountLabel)}</div>` : ''}
-          </div>
-          <button type="button" class="close" id="woh-close" title="Close" aria-label="Close">×</button>
-        </div>
-        <div class="body">${bodyHtml}</div>
-      </div>
-    `;
+    const style = document.createElement('style');
+    style.textContent = PANEL_CSS;
+    root.replaceChildren(style, panel);
 
     root.getElementById('woh-close')?.addEventListener('click', closePanel);
     root.getElementById('woh-refresh')?.addEventListener('click', () => {
       window.dispatchEvent(new CustomEvent('woh-survey-refresh'));
+    });
+    root.getElementById('woh-results-toggle')?.addEventListener('click', () => {
+      const block = root.querySelector('.results-block');
+      const button = root.getElementById('woh-results-toggle');
+      if (!block || !button) return;
+      const show = block.hidden;
+      block.hidden = !show;
+      const count = block.querySelectorAll('tbody tr').length;
+      button.textContent = show ? 'Hide survey results' : `Show ${count} survey results`;
+    });
+    bindTrendHover(root);
+  }
+
+  function scrollRowIntoPanel(row) {
+    const panel = row.closest('.panel');
+    if (!panel) return;
+    const rowRect = row.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    if (rowRect.top < panelRect.top) {
+      panel.scrollTop -= panelRect.top - rowRect.top + 8;
+    } else if (rowRect.bottom > panelRect.bottom) {
+      panel.scrollTop += rowRect.bottom - panelRect.bottom + 8;
+    }
+  }
+
+  function bindTrendHover(root) {
+    const panel = root.querySelector('.panel');
+    const trend = root.querySelector('.trend');
+    const tbody = root.querySelector('tbody');
+    if (!panel || !trend || !tbody) return;
+
+    let active = '';
+
+    const clear = () => {
+      active = '';
+      trend.classList.remove('contact-focus');
+      tbody.classList.remove('contact-focus');
+      trend.querySelectorAll('.is-hot').forEach((node) => node.classList.remove('is-hot'));
+      tbody.querySelectorAll('tr.contact-hot').forEach((node) => node.classList.remove('contact-hot'));
+    };
+
+    const show = (contact, series) => {
+      if (!contact || contact === active) return;
+      clear();
+      active = contact;
+      trend.classList.add('contact-focus');
+      tbody.classList.add('contact-focus');
+      series?.classList.add('is-hot');
+      trend.querySelector(`.trend-legend [data-contact="${CSS.escape(contact)}"]`)?.classList.add('is-hot');
+      let first = null;
+      tbody.querySelectorAll('tr').forEach((row) => {
+        if (row.getAttribute('data-contact') !== contact) return;
+        row.classList.add('contact-hot');
+        if (!first) first = row;
+      });
+      if (first) scrollRowIntoPanel(first);
+    };
+
+    trend.querySelectorAll('.trend-series').forEach((series) => {
+      const contact = series.getAttribute('data-contact');
+      series.addEventListener('mouseenter', () => show(contact, series));
+    });
+    trend.querySelectorAll('.trend-legend [data-contact]').forEach((item) => {
+      const contact = item.getAttribute('data-contact');
+      const series = trend.querySelector(`.trend-series[data-contact="${CSS.escape(contact)}"]`);
+      item.addEventListener('mouseenter', () => show(contact, series));
+    });
+
+    panel.addEventListener('click', (event) => {
+      if (!active) return;
+      const target = event.target;
+      if (target.closest('.trend-series, .trend-legend [data-contact], tbody tr, a, button')) return;
+      clear();
     });
   }
 

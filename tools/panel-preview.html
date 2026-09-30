@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Survey panel preview</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #c5d0dc;
+        margin: 0;
+        min-height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      globalThis.browser = {
+        storage: {
+          local: {
+            get: async () => ({}),
+            set: async () => {},
+          },
+        },
+      };
+    </script>
+    <script src="../extension/content/page-context.js"></script>
+    <script src="../extension/content/html-text.js"></script>
+    <script src="../extension/content/csat-parse.js"></script>
+    <script src="../extension/content/request-number.js"></script>
+    <script src="../extension/content/scrape-utils.js"></script>
+    <script src="../extension/content/panel.js"></script>
+    <script>
+      const surveys = [
+        { ok: true, req_number: 'REQ-493085', submitted_at: '09/22/2026', submitted_by: 'Mitch Yeh', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-493085', submitted_at: '09/22/2026', submitted_by: 'Mitch Yeh', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-442912', submitted_at: '09/14/2026', submitted_by: 'Sonya Huang', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-480273', submitted_at: '09/14/2026', submitted_by: 'Celine Hsieh', overall_satisfaction: 'Dissatisfied' },
+        { ok: true, req_number: 'REQ-482623', submitted_at: '08/31/2026', submitted_by: 'Sonya Huang', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-484668', submitted_at: '08/31/2026', submitted_by: 'Mitch Yeh', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-484668', submitted_at: '08/31/2026', submitted_by: 'Mitch Yeh', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-375594', appointment_name: 'OPR-375594', submitted_at: '08/25/2026', submitted_by: 'Linda Lin', overall_satisfaction: 'Very satisfied' },
+        { ok: true, req_number: 'REQ-481565', submitted_at: '08/19/2026', submitted_by: 'Sonya Huang', overall_satisfaction: 'Satisfied' },
+        { ok: true, req_number: 'OPR-383477', submitted_at: '08/18/2026', submitted_by: 'Sonya Huang', overall_satisfaction: 'Neither satisfied nor dissatisfied' },
+      ];
+      const avg = window.WohCsatParse.averageCsatPoints(surveys);
+      const mode = new URLSearchParams(location.search).get('mode') || 'account';
+      if (mode === 'appointment') {
+        window.WohSurveyPanel.showPayload({
+          page_context: 'appointment',
+          account_id: '0018000001YEmePAAT',
+          account_name: 'CTBC Bank Co., Ltd',
+          primary_nsc_contact: 'Ricky Chen',
+          primary_nsc_matched: false,
+          primary_nsc_notice: 'Ricky Chen (Primary NSC Contact) has not submitted a survey in this recent list.',
+          surveys,
+        });
+      } else {
+        window.WohSurveyPanel.showPayload({
+          page_context: 'account',
+          account_id: '0018000001YEmePAAT',
+          account_name: 'CTBC Bank Co., Ltd',
+          csat_average: avg.average,
+          csat_average_count: avg.count,
+          csat_average_display: avg.display,
+          csat_average_notice: avg.notice,
+          surveys,
+        });
+      }
+    </script>
+  </body>
+</html>
