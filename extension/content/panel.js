@@ -62,6 +62,7 @@
           background: #f8d7da;
           box-shadow: inset 0 0 0 2px #f1b0b7;
         }
+        .header-text { flex: 1; min-width: 0; }
         .close {
           border: none;
           background: transparent;
@@ -99,11 +100,47 @@
           border-radius: 8px;
           background: #fafafa;
         }
+        .trend-head {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin: 0 0 4px;
+        }
         .trend-title {
           font-size: 11px;
           font-weight: 700;
           color: #333;
-          margin: 0 0 4px;
+          margin: 0;
+          flex: none;
+        }
+        .ratio-circle {
+          flex: none;
+          width: 44px;
+          height: 44px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #e7f1fb;
+          color: #1f1f1f;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: -0.03em;
+          line-height: 1;
+          box-shadow: inset 0 0 0 2px #b9d4f0;
+        }
+        .trend-empty {
+          margin: 12px 4px 16px;
+          padding: 18px 14px;
+          font-size: 16px;
+          font-weight: 700;
+          line-height: 1.35;
+          color: #7a3e00;
+          text-align: center;
+          background: #fff4e5;
+          border: 1px solid #e8c48a;
+          border-radius: 8px;
         }
         .trend-body {
           display: flex;
@@ -117,9 +154,9 @@
           width: 100%;
           height: auto;
         }
-        .trend-series { cursor: pointer; }
-        .trend.contact-focus .trend-series { opacity: 0.28; }
-        .trend.contact-focus .trend-series.is-hot { opacity: 1; }
+        .trend.can-hover .trend-series { cursor: pointer; }
+        .trend.can-hover.contact-focus .trend-series { opacity: 0.28; }
+        .trend.can-hover.contact-focus .trend-series.is-hot { opacity: 1; }
         tbody.contact-focus tr:not(.contact-hot) td { opacity: 0.35; }
         tr.contact-hot td { box-shadow: inset 0 2px 0 #0176d3, inset 0 -2px 0 #0176d3; }
         tr.contact-hot td:first-child { box-shadow: inset 4px 0 0 #0176d3, inset 0 2px 0 #0176d3, inset 0 -2px 0 #0176d3; }
@@ -141,12 +178,12 @@
           font-size: 10px;
           color: #333;
           line-height: 1.35;
-          cursor: pointer;
           border-radius: 3px;
           padding: 2px 3px;
         }
-        .trend.contact-focus .trend-legend span { opacity: 0.45; }
-        .trend.contact-focus .trend-legend span.is-hot {
+        .trend.can-hover .trend-legend span { cursor: pointer; }
+        .trend.can-hover.contact-focus .trend-legend span { opacity: 0.45; }
+        .trend.can-hover.contact-focus .trend-legend span.is-hot {
           opacity: 1;
           background: #e3f2fd;
         }
@@ -261,17 +298,36 @@
     document.getElementById(PANEL_ID)?.remove();
   }
 
-  function reqNode(survey, { errorRow = false } = {}) {
+  function externalLink(href, label, title) {
+    if (!href || label == null || label === '' || label === '—') return label || '—';
+    const attrs = { href, target: '_blank', rel: 'noreferrer' };
+    if (title) attrs.title = title;
+    return el('a', attrs, label);
+  }
+
+  function requestHref(survey) {
+    if (survey?.appointment_url) return survey.appointment_url;
+    const id = survey?.appointment_id;
+    if (!id) return '';
+    return `${location.origin}/lightning/r/Appointment__c/${encodeURIComponent(id)}/view`;
+  }
+
+  function feedbackHref(survey) {
+    if (survey?.feedback_url) return survey.feedback_url;
+    const id = survey?.appointment_id;
+    if (!id) return '';
+    return `${location.origin}/apex/WHT_FeedBackDetail?appointmentId=${encodeURIComponent(id)}`;
+  }
+
+  function reqNode(survey) {
     const label = window.WohRequestNumber?.requestNumberLabel
       ? window.WohRequestNumber.requestNumberLabel(survey)
       : survey.req_number || survey.appointment_name || '—';
-    const href = errorRow
-      ? survey.feedback_url || survey.appointment_url || ''
-      : survey.feedback_url || '';
-    if (href) {
-      return el('a', { href, target: '_blank', rel: 'noreferrer' }, label);
-    }
-    return label;
+    return externalLink(requestHref(survey), label, 'Open request');
+  }
+
+  function csatLinkNode(survey, label) {
+    return externalLink(feedbackHref(survey), label, 'Open Feedback Details');
   }
 
   function customerNode(survey) {
@@ -282,27 +338,6 @@
     return name;
   }
 
-  function primaryNoticeNode(payload) {
-    if (payload?.primary_nsc_contact && payload?.primary_nsc_matched) {
-      return el(
-        'div',
-        { className: 'notice ok' },
-        'Primary NSC Contact ',
-        el('strong', {}, payload.primary_nsc_contact),
-        ' appears in this list (bold).'
-      );
-    }
-    if (payload?.primary_nsc_contact) {
-      return el(
-        'div',
-        { className: 'notice' },
-        payload.primary_nsc_notice ||
-          `${payload.primary_nsc_contact} (Primary NSC Contact) has not submitted a survey in this recent list.`
-      );
-    }
-    return el('div', { className: 'notice' }, 'Primary NSC Contact not found on this request.');
-  }
-
   function averageTone(display) {
     const score = Number(display);
     if (score > 4.5) return 'good';
@@ -310,8 +345,31 @@
     return 'low';
   }
 
+  function returnRatioPercent(payload) {
+    const csat = payload?.csat_count;
+    const requests = payload?.request_count;
+    if (Number.isInteger(csat) && Number.isInteger(requests)) {
+      if (requests === 0) return '—';
+      return `${((csat / requests) * 100).toFixed(1)}%`;
+    }
+    const display = String(payload?.return_ratio_display || '').trim();
+    const percent = display.match(/^(\d+(?:\.\d+)?%|—)/);
+    return percent ? percent[1] : '';
+  }
+
+  function returnRatioNode(payload) {
+    const display = returnRatioPercent(payload);
+    if (!display) return null;
+    const label = `Return ratio ${display}`;
+    return el('div', { className: 'ratio-circle', title: label, 'aria-label': label }, display);
+  }
+
+  function trendHeading(payload, title) {
+    return el('div', { className: 'trend-head' }, el('p', { className: 'trend-title' }, title), returnRatioNode(payload));
+  }
+
   function accountAverageNode(payload) {
-    if (payload?.page_context !== 'account') return null;
+    if (payload?.page_context !== 'account' && payload?.page_context !== 'appointment') return null;
     const display = payload?.csat_average_display;
     if (!display) return null;
     const tone = averageTone(display);
@@ -324,11 +382,6 @@
       },
       `${display}/5`
     );
-  }
-
-  function contextNoticeNode(payload) {
-    if (payload?.page_context === 'account') return null;
-    return primaryNoticeNode(payload);
   }
 
   function svgEl(tag, attrs = {}, ...children) {
@@ -372,19 +425,23 @@
     return text.slice(0, 10);
   }
 
+  function emptyCsatText(payload) {
+    if (payload?.page_context === 'appointment') {
+      const name = String(payload?.primary_nsc_contact || '').trim();
+      if (!name) return 'Primary NSC Contact not found on this request.';
+      return `This customer ${name} hasn't submitted CSAT.`;
+    }
+    const decodeText = window.WohHtmlText?.decodeHtmlEntities || ((text) => String(text ?? ''));
+    const name = String(payload?.account_name ? decodeText(payload.account_name) : '').trim();
+    return name ? `This account ${name} hasn't submitted CSAT.` : "This account hasn't submitted CSAT.";
+  }
+
   function trendSource(payload) {
     if (payload?.page_context === 'account') {
-      return { surveys: payload.surveys || [], title: 'Request CSAT trend by contact' };
+      return { surveys: payload.surveys || [], title: 'Request CSAT trend by contact and return ratio' };
     }
     if (payload?.page_context !== 'appointment') return null;
-    const name = String(payload.primary_nsc_contact || '').trim();
-    if (!name) return null;
-    const namesMatch = window.WohScrape?.namesMatch;
-    const surveys = (payload.surveys || []).filter((survey) => {
-      if (namesMatch) return namesMatch(survey?.submitted_by, name);
-      return String(survey?.submitted_by || '').replace(/\s+/g, ' ').trim().toLowerCase() === name.toLowerCase();
-    });
-    return { surveys, title: 'Request CSAT trend' };
+    return { surveys: payload.surveys || [], title: 'Request CSAT trend and return ratio' };
   }
 
   function trendChartNode(payload) {
@@ -395,7 +452,14 @@
       : { points: [], series: [] };
     const points = trend.points || [];
     const series = trend.series || [];
-    if (!points.length) return null;
+    if (!points.length) {
+      return el(
+        'div',
+        { className: 'trend' },
+        trendHeading(payload, source.title),
+        el('p', { className: 'trend-empty' }, emptyCsatText(payload))
+      );
+    }
 
     const width = 520;
     const height = 176;
@@ -452,6 +516,7 @@
       })
     );
 
+    const hoverable = payload?.page_context === 'account';
     series.forEach((entry, seriesIndex) => {
       const color = contactColor(seriesIndex);
       const coords = entry.points.map((point) => `${xAt(point.index)},${yAt(point.score)}`).join(' ');
@@ -466,31 +531,39 @@
             'stroke-linejoin': 'round',
             'stroke-linecap': 'round',
             'pointer-events': 'none',
-          }),
-          svgEl('polyline', {
-            class: 'trend-hit',
-            points: coords,
-            fill: 'none',
-            stroke: 'transparent',
-            'stroke-width': 14,
-            'stroke-linejoin': 'round',
-            'stroke-linecap': 'round',
-            'pointer-events': 'stroke',
           })
         );
+        if (hoverable) {
+          seriesNodes.push(
+            svgEl('polyline', {
+              class: 'trend-hit',
+              points: coords,
+              fill: 'none',
+              stroke: 'transparent',
+              'stroke-width': 14,
+              'stroke-linejoin': 'round',
+              'stroke-linecap': 'round',
+              'pointer-events': 'stroke',
+            })
+          );
+        }
       }
       entry.points.forEach((point) => {
         const tip = [contactFirstName(point.contact), point.date, point.label, String(point.score)].filter(Boolean).join(' · ');
+        if (hoverable) {
+          seriesNodes.push(
+            svgEl('circle', {
+              class: 'trend-hit',
+              cx: xAt(point.index),
+              cy: yAt(point.score),
+              r: 9,
+              fill: 'transparent',
+              stroke: 'none',
+              'pointer-events': 'fill',
+            })
+          );
+        }
         seriesNodes.push(
-          svgEl('circle', {
-            class: 'trend-hit',
-            cx: xAt(point.index),
-            cy: yAt(point.score),
-            r: 9,
-            fill: 'transparent',
-            stroke: 'none',
-            'pointer-events': 'fill',
-          }),
           svgEl(
             'circle',
             {
@@ -567,8 +640,8 @@
 
     return el(
       'div',
-      { className: 'trend' },
-      el('p', { className: 'trend-title' }, source.title),
+      { className: hoverable ? 'trend can-hover' : 'trend' },
+      trendHeading(payload, source.title),
       el('div', { className: 'trend-body' }, svg, legend)
     );
   }
@@ -596,7 +669,7 @@
       return el(
         'tr',
         { className: 'csat-error', 'data-contact': contact },
-        el('td', {}, reqNode(survey, { errorRow: true })),
+        el('td', {}, reqNode(survey)),
         el('td', {}, survey.submitted_at || '—'),
         el('td', {}, customerNode(survey)),
         el('td', {}, survey.error || 'Failed')
@@ -612,7 +685,7 @@
       el('td', {}, reqNode(survey)),
       el('td', {}, survey.submitted_at || '—'),
       el('td', {}, customerNode(survey)),
-      el('td', {}, csat)
+      el('td', {}, csatLinkNode(survey, csat))
     );
   }
 
@@ -643,14 +716,8 @@
     if (!payload) {
       return [el('div', { className: 'status-line' }, statusText || 'Loading…')];
     }
-    if (!(payload.surveys || []).length) {
-      const nodes = [el('div', { className: 'status-line' }, payload.message || 'No surveys found.')];
-      if (payload.page_context !== 'account') {
-        nodes.push(primaryNoticeNode(payload));
-      }
-      return nodes;
-    }
-    const nodes = [el('div', { className: 'status-line' }, statusText || '')];
+    const nodes = [];
+    if (statusText) nodes.push(el('div', { className: 'status-line' }, statusText));
     if (fromCache) {
       nodes.push(
         el(
@@ -661,8 +728,9 @@
         )
       );
     }
-    nodes.push(contextNoticeNode(payload));
-    nodes.push(trendChartNode(payload));
+    const chart = trendChartNode(payload);
+    if (chart) nodes.push(chart);
+    if (!(payload.surveys || []).length) return nodes;
     const table = surveyTableNode(payload);
     if (payload.page_context === 'account') {
       const count = (payload.surveys || []).length;
@@ -685,15 +753,29 @@
     const root = host.shadowRoot;
     const decodeText = window.WohHtmlText?.decodeHtmlEntities || ((text) => String(text ?? ''));
     const accountName = payload?.account_name ? decodeText(payload.account_name) : '';
-    const accountLabel = payload
-      ? accountName
-        ? `${accountName} (${payload.account_id || ''})`
-        : payload.account_id || ''
-      : '';
+    const contactName = String(payload?.primary_nsc_contact || '').trim();
+    const contactId = String(payload?.primary_nsc_id || '').trim();
+    const contactLabel = contactName
+      ? contactId
+        ? `Contact: ${contactName} (${contactId})`
+        : `Contact: ${contactName}`
+      : contactId
+        ? `Contact: ${contactId}`
+        : '';
+    const contextLine =
+      payload?.page_context === 'appointment'
+        ? contactLabel
+        : payload
+          ? accountName
+            ? `Account: ${accountName} (${payload.account_id || ''})`
+            : payload.account_id
+              ? `Account: ${payload.account_id}`
+              : ''
+          : '';
 
     const headerText = el(
       'div',
-      {},
+      { className: 'header-text' },
       el('p', { className: 'title' }, 'Survey History Tracking'),
       el(
         'p',
@@ -701,11 +783,11 @@
         payload?.page_context === 'account'
           ? '20 most recent surveys for this Account'
           : payload?.page_context === 'appointment'
-            ? '10 most recent surveys for this Account'
+            ? '10 most recent surveys for this Primary NSC Contact'
             : 'Most recent surveys for this Account'
       ),
-      accountLabel
-        ? el('div', { className: 'account-row' }, el('div', { className: 'account' }, `Account: ${accountLabel}`))
+      contextLine
+        ? el('div', { className: 'account-row' }, el('div', { className: 'account' }, contextLine))
         : null
     );
 
@@ -756,7 +838,7 @@
 
   function bindTrendHover(root) {
     const panel = root.querySelector('.panel');
-    const trend = root.querySelector('.trend');
+    const trend = root.querySelector('.trend.can-hover');
     const tbody = root.querySelector('tbody');
     if (!panel || !trend || !tbody) return;
 
@@ -817,14 +899,17 @@
     showPayload(payload, { fromCache = false, statusText = '' } = {}) {
       const okCount = (payload.surveys || []).filter((s) => s.ok).length;
       const total = (payload.surveys || []).length;
+      const quietEmpty = total === 0 && Boolean(trendSource(payload));
       renderPanel({
         payload,
         fromCache,
         statusText:
           statusText ||
-          (fromCache
-            ? `Showing ${okCount} of ${total} surveys (from cache).`
-            : `Showing ${okCount} of ${total} most recent surveys.`),
+          (quietEmpty
+            ? ''
+            : fromCache
+              ? `Showing ${okCount} of ${total} surveys (from cache).`
+              : `Showing ${okCount} of ${total} most recent surveys.`),
       });
     },
     showError(error) {

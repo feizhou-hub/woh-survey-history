@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Survey History Tracking",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "description": "Show the newest Ask-an-Expert survey answers for the Account on the current Appointment or Account page.",
   "browser_specific_settings": {
     "gecko": {

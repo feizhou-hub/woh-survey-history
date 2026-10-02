@@ -1,3 +1,5 @@
+// Not registered in manifest.json or manifest.chrome.json.
+// The running extension does not load this page or post data to a webhook.
 const api = globalThis.browser ?? globalThis.chrome;
 
 const webhookUrlEl = document.getElementById('webhookUrl');

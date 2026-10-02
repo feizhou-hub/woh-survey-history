@@ -47,12 +47,53 @@
       if (mode === 'appointment') {
         window.WohSurveyPanel.showPayload({
           page_context: 'appointment',
-          account_id: '0018000001YEmePAAT',
-          account_name: 'CTBC Bank Co., Ltd',
-          primary_nsc_contact: 'Ricky Chen',
-          primary_nsc_matched: false,
-          primary_nsc_notice: 'Ricky Chen (Primary NSC Contact) has not submitted a survey in this recent list.',
-          surveys,
+          account_id: '0014X00002U4gDAQAZ',
+          account_name: 'Cirks Construction DBA KDC',
+          primary_nsc_contact: 'Tri Sudjono',
+          primary_nsc_id: '0054X00000Ea18YQAR',
+          csat_count: 0,
+          request_count: 14,
+          return_ratio: 0,
+          return_ratio_display: '0.0%',
+          surveys: [],
+        });
+      } else if (mode === 'account-empty') {
+        window.WohSurveyPanel.showPayload(
+          {
+            page_context: 'account',
+            account_id: '0018000001QzJQgAAN',
+            account_name: 'Mercari, Inc.',
+            csat_count: 0,
+            request_count: 8,
+            return_ratio: 0,
+            return_ratio_display: '0.0%',
+            surveys: [],
+          },
+          { fromCache: true }
+        );
+      } else if (mode === 'appointment-hit') {
+        const hitSurveys = [
+          { ok: true, req_number: 'REQ-487829', appointment_id: 'a3NVT000005xiIH2AY', appointment_url: 'https://workday.lightning.force.com/lightning/r/Appointment__c/a3NVT000005xiIH2AY/view', feedback_url: 'https://workday.lightning.force.com/apex/WHT_FeedBackDetail?appointmentId=a3NVT000005xiIH2AY', submitted_at: '09/09/2026', submitted_by: 'Sushma Chandrakanth', overall_satisfaction: 'Satisfied', is_primary_nsc: true },
+          { ok: true, req_number: 'REQ-478557', submitted_at: '08/25/2026', submitted_by: 'Sushma Chandrakanth', overall_satisfaction: 'Satisfied', is_primary_nsc: true },
+          { ok: true, req_number: 'REQ-463019', submitted_at: '08/19/2026', submitted_by: 'Sushma Chandrakanth', overall_satisfaction: 'Very dissatisfied', is_primary_nsc: true },
+          { ok: true, req_number: 'REQ-447742', submitted_at: '06/11/2026', submitted_by: 'Sushma Chandrakanth', overall_satisfaction: 'Satisfied', is_primary_nsc: true },
+          { ok: true, req_number: 'REQ-440415', submitted_at: '05/11/2026', submitted_by: 'Sushma Chandrakanth', overall_satisfaction: 'Dissatisfied', is_primary_nsc: true },
+        ];
+        const hitAvg = window.WohCsatParse.averageCsatPoints(hitSurveys);
+        window.WohSurveyPanel.showPayload({
+          page_context: 'appointment',
+          account_id: '00180000000sfc5TAAQ',
+          account_name: 'QBE Group Services Pty Limited',
+          primary_nsc_contact: 'Sushma Chandrakanth',
+          primary_nsc_matched: true,
+          csat_average: hitAvg.average,
+          csat_average_count: hitAvg.count,
+          csat_average_display: hitAvg.display,
+          csat_count: 5,
+          request_count: 18,
+          return_ratio: 5 / 18,
+          return_ratio_display: '27.8%',
+          surveys: hitSurveys,
         });
       } else {
         window.WohSurveyPanel.showPayload({
@@ -63,6 +104,10 @@
           csat_average_count: avg.count,
           csat_average_display: avg.display,
           csat_average_notice: avg.notice,
+          csat_count: 48,
+          request_count: 120,
+          return_ratio: 0.4,
+          return_ratio_display: '40.0%',
           surveys,
         });
       }

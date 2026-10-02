@@ -86,14 +86,52 @@
     return rel?.field || rel?.fieldName || null;
   }
 
-  function isAccountSurveySoql(soql) {
+  function isRecentSurveySoql(soql) {
     return (
       typeof soql === 'string' &&
       soql.length < 2000 &&
-      /^SELECT Id, Name, Appointment__c, Appointment__r\.Name(?:, Appointment__r\.[A-Za-z][A-Za-z0-9_]*(?:\.Name)?)?, Date_Time_Survey_Submitted__c FROM WOH_Survey_Result__c WHERE [A-Za-z][A-Za-z0-9_]* = '[a-zA-Z0-9]{15,18}' ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST LIMIT \d{1,2}$/.test(
+      /^SELECT Id, Name, Appointment__c, Appointment__r\.Name(?:, Appointment__r\.[A-Za-z][A-Za-z0-9_]*(?:\.Name)?)?, Date_Time_Survey_Submitted__c FROM WOH_Survey_Result__c WHERE [A-Za-z][A-Za-z0-9_]* = '[a-zA-Z0-9]{15,18}'(?: AND Appointment__r\.User__c = '[a-zA-Z0-9]{15,18}'| AND Appointment__r\.Primary_NSC_Contact__c = '(?:[^'\\]|\\.){1,160}')? ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST LIMIT \d{1,2}$/.test(
         soql
       )
     );
+  }
+
+  function isReturnRatioCountSoql(soql) {
+    return (
+      typeof soql === 'string' &&
+      soql.length < 500 &&
+      /^SELECT COUNT\(\) FROM (?:WOH_Survey_Result__c|Appointment__c) WHERE [A-Za-z][A-Za-z0-9_]* = '[a-zA-Z0-9]{15,18}'(?: AND (?:Appointment__r\.)?(?:User__c = '[a-zA-Z0-9]{15,18}'|Primary_NSC_Contact__c = '(?:[^'\\]|\\.){1,160}'))?$/.test(
+        soql
+      )
+    );
+  }
+
+  function isAccountSurveySoql(soql) {
+    return isRecentSurveySoql(soql) || isReturnRatioCountSoql(soql);
+  }
+
+  function soqlStringLiteral(value) {
+    return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  }
+
+  /** Appointment-page only. Account queries pass null and stay account-scoped. */
+  function primaryNscWhereClause(contactFilter) {
+    if (!contactFilter) return '';
+    const field = String(contactFilter.field || '');
+    const value = String(contactFilter.value || '');
+    if (field === 'Appointment__r.User__c') {
+      if (!/^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(value)) {
+        throw new Error('Invalid Primary NSC Contact');
+      }
+      return ` AND ${field} = '${value}'`;
+    }
+    if (field === 'Appointment__r.Primary_NSC_Contact__c') {
+      if (!value || value.length > 80 || /[\u0000-\u001f]/.test(value)) {
+        throw new Error('Invalid Primary NSC Contact');
+      }
+      return ` AND ${field} = ${soqlStringLiteral(value)}`;
+    }
+    throw new Error('Invalid Primary NSC Contact field');
   }
 
   /**
@@ -124,7 +162,73 @@
     return `Appointment__r.${field.apiName}`;
   }
 
-  function recentSurveySoql(accountId, lookupField, limit, requestSelect = '') {
+  function assertSalesforceId(value, label) {
+    if (!/^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(String(value || ''))) {
+      throw new Error(`Invalid ${label}`);
+    }
+  }
+
+  function assertLookupField(lookupField) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(String(lookupField || ''))) {
+      throw new Error('Invalid survey lookup field');
+    }
+  }
+
+  /** All survey results for this account, optionally one Primary NSC Contact. */
+  function surveyCountSoql(accountId, lookupField, contactFilter = null) {
+    assertSalesforceId(accountId, 'Account Id');
+    assertLookupField(lookupField);
+    const contactClause = primaryNscWhereClause(contactFilter);
+    return `SELECT COUNT() FROM ${SURVEY_OBJECT} WHERE ${lookupField} = '${accountId}'${contactClause}`;
+  }
+
+  /**
+   * All appointments for this account. The contact filter is written for
+   * survey queries (Appointment__r.User__c); Appointment__c stores those
+   * fields directly.
+   */
+  function appointmentCountSoql(accountId, contactFilter = null) {
+    assertSalesforceId(accountId, 'Account Id');
+    const contactClause = primaryNscWhereClause(contactFilter).replace('Appointment__r.', '');
+    return `SELECT COUNT() FROM Appointment__c WHERE Account__c = '${accountId}'${contactClause}`;
+  }
+
+  function countFromQueryResult(json) {
+    const count = json?.totalSize;
+    if (!Number.isInteger(count) || count < 0) return null;
+    return count;
+  }
+
+  /** Return ratio = whole CSAT count / total requests. No requests → em dash. */
+  function returnRatioSummary(csatCount, requestCount) {
+    const csat = Number(csatCount);
+    const requests = Number(requestCount);
+    if (!Number.isInteger(csat) || csat < 0 || !Number.isInteger(requests) || requests < 0) {
+      return {
+        csat_count: null,
+        request_count: null,
+        return_ratio: null,
+        return_ratio_display: '',
+      };
+    }
+    if (requests === 0) {
+      return {
+        csat_count: csat,
+        request_count: 0,
+        return_ratio: null,
+        return_ratio_display: '—',
+      };
+    }
+    const ratio = csat / requests;
+    return {
+      csat_count: csat,
+      request_count: requests,
+      return_ratio: ratio,
+      return_ratio_display: `${(ratio * 100).toFixed(1)}%`,
+    };
+  }
+
+  function recentSurveySoql(accountId, lookupField, limit, requestSelect = '', contactFilter = null) {
     if (!/^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(String(accountId || ''))) {
       throw new Error('Invalid Account Id');
     }
@@ -136,12 +240,13 @@
       throw new Error('Invalid appointment request field');
     }
     const n = Math.min(Math.max(Number(limit) || 10, 1), 50);
+    const contactClause = primaryNscWhereClause(contactFilter);
     return (
       'SELECT Id, Name, Appointment__c, Appointment__r.Name' +
       (extra ? `, ${extra}` : '') +
       ', Date_Time_Survey_Submitted__c ' +
       `FROM ${SURVEY_OBJECT} ` +
-      `WHERE ${lookupField} = '${accountId}' ` +
+      `WHERE ${lookupField} = '${accountId}'${contactClause} ` +
       'ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST ' +
       `LIMIT ${n}`
     );
@@ -238,10 +343,11 @@
 
   /**
    * Newest survey-result rows for an Account.
-   * SOQL avoids the related-list UI API, which only serves lists on the
-   * record type page layout. Some Account layouts omit WOH_Survey_Results__r.
+   * Appointment pages also pass contactFilter so the query is limited to that
+   * Primary NSC Contact. SOQL avoids the related-list UI API, which only
+   * serves lists on the record type page layout.
    */
-  async function queryRecentSurveys(accountId, limit = 10) {
+  async function queryRecentSurveys(accountId, limit = 10, contactFilter = null) {
     const lookupField = await surveyAccountLookupField();
     let requestSelect = '';
     try {
@@ -249,9 +355,27 @@
     } catch (err) {
       console.warn('[WOH Survey] Appointment request-field lookup failed', err);
     }
-    const soql = recentSurveySoql(accountId, lookupField, limit, requestSelect);
+    const soql = recentSurveySoql(accountId, lookupField, limit, requestSelect, contactFilter);
     const json = await fetchAccountSurveyQuery(soql);
     return (json.records || []).map(soqlSurveyToUiRecord);
+  }
+
+  /**
+   * Whole CSAT count and total appointments for an account.
+   * Appointment pages pass the same Primary NSC filter as the survey list.
+   */
+  async function queryReturnRatio(accountId, contactFilter = null) {
+    const lookupField = await surveyAccountLookupField();
+    const [surveyJson, requestJson] = await Promise.all([
+      fetchAccountSurveyQuery(surveyCountSoql(accountId, lookupField, contactFilter)),
+      fetchAccountSurveyQuery(appointmentCountSoql(accountId, contactFilter)),
+    ]);
+    const csatCount = countFromQueryResult(surveyJson);
+    const requestCount = countFromQueryResult(requestJson);
+    if (csatCount == null || requestCount == null) {
+      throw new Error('Salesforce count query returned no total');
+    }
+    return returnRatioSummary(csatCount, requestCount);
   }
 
   /**
@@ -337,9 +461,15 @@
     surveyLookupFieldFromDescribe,
     appointmentRequestSelect,
     isAccountSurveySoql,
+    primaryNscWhereClause,
     recentSurveySoql,
+    surveyCountSoql,
+    appointmentCountSoql,
+    countFromQueryResult,
+    returnRatioSummary,
     soqlSurveyToUiRecord,
     queryRecentSurveys,
+    queryReturnRatio,
     relatedListAll,
     fetchFeedbackHtml,
     fetchFeedbackHtmlDirect,

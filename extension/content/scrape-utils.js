@@ -51,7 +51,7 @@ function textOf(el) {
 
 function parseRecordId(href) {
   if (!href) return null;
-  const match = href.match(/\/(001|003|a3N|a08)[a-zA-Z0-9]{12,18}/);
+    const match = href.match(/\/(001|003|005|a3N|a08)[a-zA-Z0-9]{12,18}/);
   return match ? match[0].slice(1) : null;
 }
 

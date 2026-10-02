@@ -1,35 +1,26 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Survey History Tracking",
   "version": "1.2.3",
   "description": "Show the newest Ask-an-Expert survey answers for the Account on the current Appointment or Account page.",
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "survey-history-tracking@feizhou-hub",
-      "strict_min_version": "140.0",
-      "data_collection_permissions": {
-        "required": ["none"]
-      }
-    },
-    "gecko_android": {
-      "strict_min_version": "142.0"
-    }
-  },
+  "minimum_chrome_version": "120",
   "permissions": [
     "storage",
     "tabs",
     "activeTab",
     "cookies",
     "webNavigation",
+    "scripting"
+  ],
+  "host_permissions": [
     "https://workday.lightning.force.com/*",
     "https://workday.my.salesforce.com/*",
     "https://workday--c.vf.force.com/*"
   ],
   "background": {
-    "scripts": ["api.js", "content/page-context.js", "content/sf-api.js", "background.js"],
-    "persistent": false
+    "service_worker": "background.js"
   },
-  "browser_action": {
+  "action": {
     "default_title": "Survey History Tracking",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -69,7 +60,7 @@
         "https://workday.my.salesforce.com/*",
         "https://workday--c.vf.force.com/*"
       ],
-        "js": ["content/page-context.js", "content/request-number.js", "content/csat-parse.js", "content/scrape-utils.js", "content/feedback.js"],
+      "js": ["content/page-context.js", "content/request-number.js", "content/csat-parse.js", "content/scrape-utils.js", "content/feedback.js"],
       "run_at": "document_idle"
     }
   ],

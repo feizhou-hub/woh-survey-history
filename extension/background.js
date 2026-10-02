@@ -3,7 +3,7 @@
  */
 
 if (typeof importScripts === 'function') {
-  importScripts('api.js', 'content/page-context.js');
+  importScripts('api.js', 'content/page-context.js', 'content/sf-api.js');
 }
 
 const api = globalThis.ext || globalThis.browser || globalThis.chrome;
@@ -28,41 +28,68 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function useChromeScripting() {
+  return Boolean(api.scripting?.executeScript) && !api.tabs?.executeScript;
+}
+
+async function injectExtensionFile(tabId, file) {
+  if (useChromeScripting()) {
+    await api.scripting.executeScript({ target: { tabId }, files: [file] });
+    return;
+  }
+  if (api.tabs?.executeScript) {
+    await api.tabs.executeScript(tabId, { file });
+  }
+}
+
 async function ensureScripts(tabId) {
-  if (!api.tabs?.executeScript) return;
+  if (!useChromeScripting() && !api.tabs?.executeScript) return;
   for (const file of PANEL_SCRIPT_FILES) {
     try {
-      await api.tabs.executeScript(tabId, { file });
+      await injectExtensionFile(tabId, file);
     } catch (_) {
       /* already injected or transient page state */
     }
   }
 }
 
+function paintStatusInPage(message) {
+  const msg = String(message || 'Loading…');
+  if (window.WohSurveyPanel?.setStatus) {
+    window.WohSurveyPanel.setStatus(msg);
+    return;
+  }
+  let host = document.getElementById('woh-account-surveys-panel-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'woh-account-surveys-panel-host';
+    host.style.cssText = 'all:initial;position:fixed;z-index:2147483646;top:72px;right:16px;';
+    document.documentElement.appendChild(host);
+    host.attachShadow({ mode: 'open' });
+  }
+  const box = document.createElement('div');
+  box.setAttribute(
+    'style',
+    'font:14px -apple-system,sans-serif;background:#fff;border:1px solid #d8dde6;border-radius:10px;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.12);min-width:260px;color:#181818;'
+  );
+  box.textContent = msg;
+  host.shadowRoot.replaceChildren(box);
+}
+
 async function showInstantPanel(tabId, text) {
-  if (!api.tabs?.executeScript) return;
   const message = String(text || 'Loading…');
   try {
+    if (useChromeScripting()) {
+      await api.scripting.executeScript({
+        target: { tabId },
+        func: paintStatusInPage,
+        args: [message],
+      });
+      return;
+    }
+    if (!api.tabs?.executeScript) return;
     await api.tabs.executeScript(tabId, {
-      code: `(() => {
-        const msg = ${JSON.stringify(message)};
-        if (window.WohSurveyPanel?.setStatus) {
-          window.WohSurveyPanel.setStatus(msg);
-          return;
-        }
-        let host = document.getElementById('woh-account-surveys-panel-host');
-        if (!host) {
-          host = document.createElement('div');
-          host.id = 'woh-account-surveys-panel-host';
-          host.style.cssText = 'all:initial;position:fixed;z-index:2147483646;top:72px;right:16px;';
-          document.documentElement.appendChild(host);
-          host.attachShadow({ mode: 'open' });
-        }
-        const box = document.createElement('div');
-        box.setAttribute('style', 'font:14px -apple-system,sans-serif;background:#fff;border:1px solid #d8dde6;border-radius:10px;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.12);min-width:260px;color:#181818;');
-        box.textContent = msg;
-        host.shadowRoot.replaceChildren(box);
-      })();`,
+      code: `(${paintStatusInPage.toString()})(${JSON.stringify(message)})`,
     });
   } catch (_) {
     /* tab may not be injectable yet */

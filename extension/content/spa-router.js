@@ -10,7 +10,12 @@
   const { isSurveyHostUrl } = window.WohPageContext;
 
   function notifyBackground(url) {
-    api.runtime.sendMessage({ type: 'WOH_SPA_NAVIGATION', url }).catch(() => {});
+    try {
+      const pending = api.runtime.sendMessage({ type: 'WOH_SPA_NAVIGATION', url });
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch (_) {
+      /* background worker may still be starting */
+    }
   }
 
   let lastUrl = location.href;

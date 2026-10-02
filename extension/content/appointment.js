@@ -1,8 +1,9 @@
 /**
  * Runs on Appointment__c and Account record pages.
- * Both pages call loadSurveysForPage(): resolve the Account, load its newest
- * surveys (10 on an Appointment, 20 on an Account; 12h cache), then apply that page's summary.
- * Appointment summary: Primary NSC Contact. Account summary: average Request CSAT.
+ * Both pages call loadSurveysForPage(). Appointment pages load that request's
+ * Primary NSC Contact's newest 10 surveys. Account pages load the account's
+ * newest 20 and average Request CSAT. Both pages also show the return
+ * ratio: every CSAT survey divided by every request. Results stay cached for 12 hours.
  */
 
 (async function initAppointmentScraper() {
@@ -15,7 +16,8 @@
   const { detectPageContext } = window.WohPageContext;
   const { uiApiRecord, uiApiRecordFields, fieldValue, fieldDisplay, queryRecentSurveys, fetchFeedbackHtml } =
     window.WohSfApi;
-  const { extractPrimaryNscFromUiRecord, PRIMARY_NSC_UI_FIELDS } = window.WohPrimaryNsc || {};
+  const { extractPrimaryNscFromUiRecord, primaryNscSurveyFilter, surveysSubmittedBy, PRIMARY_NSC_UI_FIELDS } =
+    window.WohPrimaryNsc || {};
   const { appointmentNameFromRelatedRecord, extractAppointmentNumber, isSurveyResultName, isAppNumber } =
     window.WohRequestNumber || {};
 
@@ -150,9 +152,11 @@
     );
   }
 
-  async function loadRecentSurveyMeta(accountId, limit) {
-    emitProgress('Loading survey list for this account…');
-    const records = await queryRecentSurveys(accountId, limit);
+  async function loadRecentSurveyMeta(accountId, limit, contactFilter) {
+    emitProgress(
+      contactFilter ? 'Loading surveys for this Primary NSC Contact…' : 'Loading survey list for this account…'
+    );
+    const records = await queryRecentSurveys(accountId, limit, contactFilter);
     const sorted = [...records].sort((a, b) => sortKey(b) - sortKey(a));
     const recent = sorted.slice(0, limit).map((record) => {
       const rawName = fieldDisplay(record, 'Appointment__c') || '';
@@ -264,8 +268,9 @@
     }
   }
 
-  async function fetchFreshSurveys(account, limit) {
-    const recent = await loadRecentSurveyMeta(account.accountId, limit);
+  async function fetchFreshSurveys(account, limit, { cacheId, contactFilter } = {}) {
+    const storeId = cacheId || account.accountId;
+    const recent = await loadRecentSurveyMeta(account.accountId, limit, contactFilter);
     if (!recent.length) {
       const payload = {
         ok: true,
@@ -274,10 +279,10 @@
         account_href: account.accountHref || '',
         appointment_id: account.appointmentId || '',
         survey_limit: limit,
+        survey_scope: contactFilter ? 'primary_nsc' : 'account',
         surveys: [],
-        message: 'No WOH Survey Results found for this Account',
       };
-      await panel.writeCache(account.accountId, payload);
+      await panel.writeCache(storeId, payload);
       return payload;
     }
 
@@ -294,9 +299,10 @@
       account_source: account.source || '',
       appointment_id: account.appointmentId || '',
       survey_limit: limit,
+      survey_scope: contactFilter ? 'primary_nsc' : 'account',
       surveys,
     };
-    await panel.writeCache(account.accountId, payload);
+    await panel.writeCache(storeId, payload);
     return payload;
   }
 
@@ -307,22 +313,56 @@
   function withPrimaryNsc(payload, primaryOverride = null) {
     const primary = primaryOverride || findPrimaryNscContact();
     const primaryName = primary?.name || '';
-    const surveys = (payload.surveys || []).map((survey) => ({
+    const surveys = (surveysSubmittedBy
+      ? surveysSubmittedBy(payload.surveys, primaryName, namesMatch)
+      : []
+    ).map((survey) => ({
       ...survey,
-      is_primary_nsc: Boolean(primaryName && namesMatch(survey.submitted_by, primaryName)),
+      is_primary_nsc: true,
     }));
-    const primaryInList = surveys.some((s) => s.ok && s.is_primary_nsc);
     return {
       ...payload,
+      survey_scope: 'primary_nsc',
       primary_nsc_contact: primaryName,
-      primary_nsc_matched: primaryInList,
+      primary_nsc_id: primary?.id || '',
+      primary_nsc_matched: surveys.some((survey) => survey.ok !== false),
       primary_nsc_source: primary?.source || '',
-      primary_nsc_notice:
-        primaryName && !primaryInList
-          ? `${primaryName} (Primary NSC Contact) has not submitted a survey in this recent list.`
-          : '',
       surveys,
     };
+  }
+
+  function hasReturnRatio(payload) {
+    return (
+      Number.isInteger(payload?.request_count) &&
+      Number.isInteger(payload?.csat_count) &&
+      Boolean(payload?.return_ratio_display)
+    );
+  }
+
+  async function fetchReturnRatio(accountId, contactFilter) {
+    if (!window.WohSfApi?.queryReturnRatio) return null;
+    try {
+      return await window.WohSfApi.queryReturnRatio(accountId, contactFilter);
+    } catch (err) {
+      console.warn('[WOH Survey] Return ratio query failed', err);
+      return null;
+    }
+  }
+
+  async function persistReturnRatio(cacheId, summary) {
+    if (!summary || !cacheId || !panel?.readCache || !panel?.writeCache) return;
+    const cached = await panel.readCache(cacheId);
+    if (!cached?.payload) return;
+    await panel.writeCache(cacheId, { ...cached.payload, ...summary });
+  }
+
+  async function withReturnRatio(payload, { pageContext, accountId, contactFilter, cacheId, pending }) {
+    if (pageContext === 'appointment' && !contactFilter) return payload;
+    if (hasReturnRatio(payload)) return payload;
+    const summary = pending ? await pending : await fetchReturnRatio(accountId, contactFilter || null);
+    if (!summary?.return_ratio_display) return payload;
+    await persistReturnRatio(cacheId, summary);
+    return { ...payload, ...summary };
   }
 
   function withCsatAverage(payload) {
@@ -353,14 +393,25 @@
     return { ...payload, surveys: surveys.slice(0, limit) };
   }
 
-  /** Page-specific summary on top of the shared survey list. */
+  /**
+   * Account pages summarize every contact on the account.
+   * Appointment pages summarize surveys submitted by the Primary NSC Contact.
+   */
   function applyPageSummary(payload, pageContext, account) {
     const next = {
       ...limitSurveys(payload, surveyLimit(pageContext)),
       page_context: pageContext || payload.page_context || 'appointment',
     };
-    if (next.page_context === 'account') return withCsatAverage(next);
-    return withPrimaryNsc(next, resolvePrimaryNsc(account));
+    if (next.page_context === 'account') {
+      return withCsatAverage({ ...next, survey_scope: 'account' });
+    }
+    return withCsatAverage(withPrimaryNsc(next, resolvePrimaryNsc(account)));
+  }
+
+  function cacheMatchesPage(payload, pageContext) {
+    if (!payload?.survey_scope) return true;
+    if (pageContext === 'account') return payload.survey_scope === 'account';
+    return payload.survey_scope === 'primary_nsc';
   }
 
   async function loadSurveysForPage({ forceRefresh = false } = {}) {
@@ -372,9 +423,33 @@
     panel.setStatus('Resolving Account…');
     const account = await resolveAccountForPage(pageContext);
     const limit = surveyLimit(pageContext);
+    const primary = pageContext === 'appointment' ? resolvePrimaryNsc(account) : null;
+    const contactFilter = pageContext === 'appointment' ? primaryNscSurveyFilter?.(primary) || null : null;
+    const cacheId =
+      pageContext === 'appointment'
+        ? `${account.accountId}::nsc::${primary?.id || primary?.name || 'missing'}`
+        : account.accountId;
+
+    if (pageContext === 'appointment' && !contactFilter) {
+      const payload = applyPageSummary(
+        {
+          ok: true,
+          account_id: account.accountId,
+          account_name: account.accountName,
+          account_href: account.accountHref || '',
+          appointment_id: account.appointmentId || '',
+          survey_limit: limit,
+          surveys: [],
+        },
+        pageContext,
+        account
+      );
+      panel.showPayload(payload, { fromCache: false });
+      return { ok: true, cached: false, ...payload };
+    }
 
     if (!forceRefresh) {
-      const cached = await panel.readCache(account.accountId);
+      const cached = await panel.readCache(cacheId);
       const payload = cached?.payload;
       const staleWohSr =
         payload &&
@@ -390,15 +465,31 @@
       const cachedLimit = Number.isFinite(payload?.survey_limit)
         ? payload.survey_limit
         : (payload?.surveys || []).length;
-      if (payload && !staleWohSr && cachedLimit >= limit) {
-        const decorated = applyPageSummary(payload, pageContext, account);
+      if (payload && cacheMatchesPage(payload, pageContext) && !staleWohSr && cachedLimit >= limit) {
+        const decorated = await withReturnRatio(applyPageSummary(payload, pageContext, account), {
+          pageContext,
+          accountId: account.accountId,
+          contactFilter,
+          cacheId,
+        });
         panel.showPayload(decorated, { fromCache: true });
         return { ok: true, cached: true, ...decorated };
       }
     }
 
     panel.setStatus('Loading survey list…');
-    const payload = applyPageSummary(await fetchFreshSurveys(account, limit), pageContext, account);
+    const pendingRatio =
+      pageContext === 'appointment' && !contactFilter
+        ? null
+        : fetchReturnRatio(account.accountId, contactFilter);
+    const payload = await withReturnRatio(
+      applyPageSummary(
+        await fetchFreshSurveys(account, limit, { cacheId, contactFilter }),
+        pageContext,
+        account
+      ),
+      { pageContext, accountId: account.accountId, contactFilter, cacheId, pending: pendingRatio }
+    );
     panel.showPayload(payload, { fromCache: false });
     return payload;
   }

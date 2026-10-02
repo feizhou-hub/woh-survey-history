@@ -50,6 +50,15 @@
     return { name: cleanPersonName(name), id: id || '' };
   }
 
+  function personIdFromFields(fields) {
+    const keys = ['User__c', 'User__r', 'Primary_NSC_Contact__c', 'Primary_NSC_Contact__r', 'NSC_Contact__c', 'NSC_Contact__r'];
+    for (const key of keys) {
+      const id = String(nameFromUiField(fields?.[key]).id || '').trim();
+      if (/^(?:003|005)[a-zA-Z0-9]{12,15}$/.test(id)) return id;
+    }
+    return '';
+  }
+
   /**
    * Pull Primary NSC Contact from a UI API record payload.
    * Prefers known API names, then User__r, then any *NSC*Contact* field (not email).
@@ -79,17 +88,61 @@
 
     for (const apiName of preferred) {
       const hit = tryField(apiName);
-      if (hit) return hit;
+      if (!hit) continue;
+      if (!/^(?:003|005)/.test(hit.id)) {
+        const id = personIdFromFields(fields);
+        if (id) {
+          hit.id = id;
+          hit.href = recordHref(id);
+        }
+      }
+      return hit;
     }
 
     for (const apiName of Object.keys(fields)) {
       if (!/nsc/i.test(apiName) || !/contact/i.test(apiName)) continue;
       if (/email/i.test(apiName)) continue;
       const hit = tryField(apiName);
-      if (hit) return hit;
+      if (!hit) continue;
+      if (!/^(?:003|005)/.test(hit.id)) {
+        const id = personIdFromFields(fields);
+        if (id) {
+          hit.id = id;
+          hit.href = recordHref(id);
+        }
+      }
+      return hit;
     }
 
     return null;
+  }
+
+  /**
+   * Appointment-page survey query filter.
+   * User lookup → Appointment__r.User__c. Otherwise the string
+   * Primary_NSC_Contact__c (the field Salesforce actually stores the name in).
+   */
+  function primaryNscSurveyFilter(primary) {
+    if (!primary || typeof primary !== 'object') return null;
+    const id = String(primary.id || '').trim();
+    const apiName = String(primary.apiName || '');
+    const salesforceId = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(id);
+    if (salesforceId && (apiName === 'User__c' || apiName === 'User__r' || (id.startsWith('005') && !apiName))) {
+      return { field: 'Appointment__r.User__c', value: id };
+    }
+    const name = cleanPersonName(primary.name);
+    if (name) return { field: 'Appointment__r.Primary_NSC_Contact__c', value: name };
+    if (salesforceId && apiName === 'Primary_NSC_Contact__c') {
+      return { field: 'Appointment__r.Primary_NSC_Contact__c', value: id };
+    }
+    return null;
+  }
+
+  /** Appointment pages keep only surveys this Primary NSC Contact submitted. */
+  function surveysSubmittedBy(surveys, primaryName, namesMatch) {
+    const name = cleanPersonName(primaryName);
+    if (!name || typeof namesMatch !== 'function') return [];
+    return (surveys || []).filter((survey) => namesMatch(survey?.submitted_by, name));
   }
 
   /** Field list for an explicit UI API fetch (Full layout often omits these). */
@@ -103,6 +156,8 @@
   const api = {
     cleanPersonName,
     extractPrimaryNscFromUiRecord,
+    primaryNscSurveyFilter,
+    surveysSubmittedBy,
     nameFromUiField,
     recordHref,
     PRIMARY_NSC_UI_FIELDS,

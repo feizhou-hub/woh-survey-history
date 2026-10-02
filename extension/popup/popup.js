@@ -58,19 +58,25 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+function requestLabel(survey) {
+  return window.WohRequestNumber?.requestNumberLabel
+    ? window.WohRequestNumber.requestNumberLabel(survey)
+    : survey.req_number || survey.appointment_name || '—';
+}
+
+function externalLink(href, label, title) {
+  if (!href || label == null || label === '' || label === '—') return label || '—';
+  const attrs = { href, target: '_blank', rel: 'noreferrer' };
+  if (title) attrs.title = title;
+  return el('a', attrs, label);
+}
+
 function reqNode(survey) {
-    const label = window.WohRequestNumber?.requestNumberLabel
-      ? window.WohRequestNumber.requestNumberLabel(survey)
-      : survey.req_number || survey.appointment_name || '—';
-  const href = survey.ok
-    ? survey.feedback_url || ''
-    : survey.feedback_url || survey.appointment_url || '';
-  if (href) {
-    const attrs = { href, target: '_blank', rel: 'noreferrer' };
-    if (survey.ok) attrs.title = 'Open survey detail';
-    return el('a', attrs, label);
-  }
-  return label;
+  return externalLink(survey.appointment_url, requestLabel(survey), 'Open request');
+}
+
+function csatLinkNode(survey, label) {
+  return externalLink(survey.feedback_url, label, 'Open Feedback Details');
 }
 
 function renderSurveys(payload) {
@@ -79,9 +85,20 @@ function renderSurveys(payload) {
     subtitleEl.textContent =
       payload.page_context === 'account'
         ? '20 most recent surveys for this Account'
-        : '10 most recent surveys for this Account';
+        : '10 most recent surveys for this Primary NSC Contact';
   }
-  if (payload.account_name || payload.account_id) {
+  if (payload.page_context === 'appointment') {
+    const contactName = String(payload.primary_nsc_contact || '').trim();
+    const contactId = String(payload.primary_nsc_id || '').trim();
+    accountEl.hidden = !contactName && !contactId;
+    accountEl.textContent = contactName
+      ? contactId
+        ? `Contact: ${contactName} (${contactId})`
+        : `Contact: ${contactName}`
+      : contactId
+        ? `Contact: ${contactId}`
+        : '';
+  } else if (payload.account_name || payload.account_id) {
     accountEl.hidden = false;
     const decodeText = window.WohHtmlText?.decodeHtmlEntities || ((text) => String(text ?? ''));
     const accountName = payload.account_name ? decodeText(payload.account_name) : '';
@@ -95,7 +112,7 @@ function renderSurveys(payload) {
     accountEl.hidden = true;
   }
   if (avgEl) {
-    if (payload.page_context === 'account' && payload.csat_average_display) {
+    if (payload.csat_average_display) {
       const score = Number(payload.csat_average_display);
       const tone = score > 4.5 ? 'good' : score >= 4.2 ? 'mid' : 'low';
       avgEl.hidden = false;
@@ -109,9 +126,18 @@ function renderSurveys(payload) {
   }
 
   if (!surveys.length) {
-    resultsEl.replaceChildren(
-      el('div', { className: 'meta' }, payload.message || 'No surveys found.')
-    );
+    const decodeText = window.WohHtmlText?.decodeHtmlEntities || ((text) => String(text ?? ''));
+    const contactName = String(payload.primary_nsc_contact || '').trim();
+    const accountName = payload.account_name ? decodeText(payload.account_name).trim() : '';
+    const emptyText =
+      payload.page_context === 'appointment'
+        ? contactName
+          ? `This customer ${contactName} hasn't submitted CSAT.`
+          : 'Primary NSC Contact not found on this request.'
+        : accountName
+          ? `This account ${accountName} hasn't submitted CSAT.`
+          : "This account hasn't submitted CSAT.";
+    resultsEl.replaceChildren(el('div', { className: 'empty-csat' }, emptyText));
     return;
   }
 
@@ -132,7 +158,7 @@ function renderSurveys(payload) {
       el('td', {}, reqNode(survey)),
       el('td', {}, survey.submitted_at || '—'),
       el('td', {}, survey.submitted_by || '—'),
-      el('td', {}, survey.overall_satisfaction || '—')
+      el('td', {}, csatLinkNode(survey, survey.overall_satisfaction || '—'))
     );
   });
 
