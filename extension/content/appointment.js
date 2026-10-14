@@ -1,16 +1,25 @@
 /**
  * Runs on Appointment__c and Account record pages.
  * Both pages call loadSurveysForPage(). Appointment pages load that request's
- * Primary NSC Contact's newest 10 surveys. Account pages load the account's
- * newest 20 and average Request CSAT. Both pages also show the return
- * ratio: every CSAT survey divided by every request. Results stay cached for 12 hours.
+ * Primary NSC Contact's newest 10 surveys, including survey results whose
+ * Account__c is blank. Account pages load the account's newest 20, including a
+ * survey whose Account__c is blank when its appointment belongs to the account,
+ * and average Request CSAT. The return ratio divides survey results by requests:
+ * appointment pages count that Primary NSC Contact's User id, and account pages
+ * count the account. Results stay cached
+ * for 12 hours.
  */
 
 (async function initAppointmentScraper() {
-  if (window.__wohAppointmentScraperInit) return;
-  window.__wohAppointmentScraperInit = true;
-
   const api = globalThis.browser ?? globalThis.chrome;
+  const SURVEY_BUILD = api.runtime?.getManifest?.()?.version || '';
+  // An older script already owns this page. Do not register a second listener;
+  // the toolbar click reloads the tab when __wohSurveyBuild is not this version.
+  if (window.__wohAppointmentScraperInit === true && window.__wohSurveyBuild !== SURVEY_BUILD) return;
+  if (window.__wohSurveyBuild === SURVEY_BUILD && SURVEY_BUILD) return;
+  window.__wohSurveyBuild = SURVEY_BUILD;
+  window.__wohAppointmentScraperInit = SURVEY_BUILD || true;
+
   const { parseAppointmentId, parseAccountId, findAccountOnPage, findPrimaryNscContact, namesMatch, parseFeedbackHtml, waitFor, getFieldByLabel } =
     window.WohScrape;
   const { detectPageContext } = window.WohPageContext;
@@ -427,8 +436,8 @@
     const contactFilter = pageContext === 'appointment' ? primaryNscSurveyFilter?.(primary) || null : null;
     const cacheId =
       pageContext === 'appointment'
-        ? `${account.accountId}::nsc::${primary?.id || primary?.name || 'missing'}`
-        : account.accountId;
+        ? `nsc-contact::${SURVEY_BUILD}::${primary?.id || primary?.name || 'missing'}`
+        : `account::${SURVEY_BUILD}::${account.accountId}`;
 
     if (pageContext === 'appointment' && !contactFilter) {
       const payload = applyPageSummary(

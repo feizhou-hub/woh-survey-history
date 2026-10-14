@@ -119,21 +119,14 @@
 
   /**
    * Appointment-page survey query filter.
-   * User lookup → Appointment__r.User__c. Otherwise the string
-   * Primary_NSC_Contact__c (the field Salesforce actually stores the name in).
+   * Primary NSC Contact is the User lookup, so the survey query uses that
+   * User id (005...) on Appointment__r.User__c.
    */
   function primaryNscSurveyFilter(primary) {
     if (!primary || typeof primary !== 'object') return null;
     const id = String(primary.id || '').trim();
-    const apiName = String(primary.apiName || '');
-    const salesforceId = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(id);
-    if (salesforceId && (apiName === 'User__c' || apiName === 'User__r' || (id.startsWith('005') && !apiName))) {
+    if (/^005[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id)) {
       return { field: 'Appointment__r.User__c', value: id };
-    }
-    const name = cleanPersonName(primary.name);
-    if (name) return { field: 'Appointment__r.Primary_NSC_Contact__c', value: name };
-    if (salesforceId && apiName === 'Primary_NSC_Contact__c') {
-      return { field: 'Appointment__r.Primary_NSC_Contact__c', value: id };
     }
     return null;
   }

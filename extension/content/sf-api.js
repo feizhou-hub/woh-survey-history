@@ -87,22 +87,35 @@
   }
 
   function isRecentSurveySoql(soql) {
+    const id = "[a-zA-Z0-9]{15,18}";
+    const contactPredicate =
+      `Appointment__r\\.User__c = '${id}'|Appointment__r\\.Primary_NSC_Contact__c = '(?:[^'\\\\]|\\\\.){1,160}'`;
+    const ownAccount = `[A-Za-z][A-Za-z0-9_]* = '${id}'`;
+    const eitherAccount = `\\(${ownAccount} OR Appointment__r\\.Account__c = '${id}'\\)`;
+    const where =
+      `(?:(?:${eitherAccount}|${ownAccount})(?: AND (?:${contactPredicate}))?|${contactPredicate})`;
     return (
       typeof soql === 'string' &&
       soql.length < 2000 &&
-      /^SELECT Id, Name, Appointment__c, Appointment__r\.Name(?:, Appointment__r\.[A-Za-z][A-Za-z0-9_]*(?:\.Name)?)?, Date_Time_Survey_Submitted__c FROM WOH_Survey_Result__c WHERE [A-Za-z][A-Za-z0-9_]* = '[a-zA-Z0-9]{15,18}'(?: AND Appointment__r\.User__c = '[a-zA-Z0-9]{15,18}'| AND Appointment__r\.Primary_NSC_Contact__c = '(?:[^'\\]|\\.){1,160}')? ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST LIMIT \d{1,2}$/.test(
-        soql
-      )
+      new RegExp(
+        '^SELECT Id, Name, Appointment__c, Appointment__r\\.Name(?:, Appointment__r\\.[A-Za-z][A-Za-z0-9_]*(?:\\.Name)?)?, Date_Time_Survey_Submitted__c FROM WOH_Survey_Result__c WHERE ' +
+          where +
+          ' ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST LIMIT \\d{1,2}$'
+      ).test(soql)
     );
   }
 
   function isReturnRatioCountSoql(soql) {
+    const id = "[a-zA-Z0-9]{15,18}";
+    const name = "(?:[^'\\\\]|\\\\.){1,160}";
+    const contact = `(?:(?:Appointment__r\\.)?User__c = '${id}'|(?:Appointment__r\\.)?Primary_NSC_Contact__c = '${name}')`;
+    const account = `[A-Za-z][A-Za-z0-9_]* = '${id}'`;
     return (
       typeof soql === 'string' &&
       soql.length < 500 &&
-      /^SELECT COUNT\(\) FROM (?:WOH_Survey_Result__c|Appointment__c) WHERE [A-Za-z][A-Za-z0-9_]* = '[a-zA-Z0-9]{15,18}'(?: AND (?:Appointment__r\.)?(?:User__c = '[a-zA-Z0-9]{15,18}'|Primary_NSC_Contact__c = '(?:[^'\\]|\\.){1,160}'))?$/.test(
-        soql
-      )
+      new RegExp(
+        `^SELECT COUNT\\(\\) FROM (?:WOH_Survey_Result__c|Appointment__c) WHERE (?:${account}(?: AND ${contact})?|${contact})$`
+      ).test(soql)
     );
   }
 
@@ -174,23 +187,36 @@
     }
   }
 
-  /** All survey results for this account, optionally one Primary NSC Contact. */
+  /**
+   * Survey-result count. Account pages pass no contact filter and count
+   * Account__c. Appointment pages pass the User id and count that contact
+   * with no Account__c predicate.
+   */
   function surveyCountSoql(accountId, lookupField, contactFilter = null) {
+    if (contactFilter) {
+      const where = primaryNscWhereClause(contactFilter).replace(/^ AND /, '');
+      if (!where) throw new Error('Invalid Primary NSC Contact');
+      return `SELECT COUNT() FROM ${SURVEY_OBJECT} WHERE ${where}`;
+    }
     assertSalesforceId(accountId, 'Account Id');
     assertLookupField(lookupField);
-    const contactClause = primaryNscWhereClause(contactFilter);
-    return `SELECT COUNT() FROM ${SURVEY_OBJECT} WHERE ${lookupField} = '${accountId}'${contactClause}`;
+    return `SELECT COUNT() FROM ${SURVEY_OBJECT} WHERE ${lookupField} = '${accountId}'`;
   }
 
   /**
-   * All appointments for this account. The contact filter is written for
-   * survey queries (Appointment__r.User__c); Appointment__c stores those
-   * fields directly.
+   * Appointment count. Account pages count Account__c. Appointment pages
+   * count User__c for the Primary NSC Contact, with no Account__c predicate.
+   * The contact filter is written for survey queries (Appointment__r.User__c);
+   * Appointment__c stores that field directly.
    */
   function appointmentCountSoql(accountId, contactFilter = null) {
+    if (contactFilter) {
+      const where = primaryNscWhereClause(contactFilter).replace(/^ AND /, '').replace('Appointment__r.', '');
+      if (!where) throw new Error('Invalid Primary NSC Contact');
+      return `SELECT COUNT() FROM Appointment__c WHERE ${where}`;
+    }
     assertSalesforceId(accountId, 'Account Id');
-    const contactClause = primaryNscWhereClause(contactFilter).replace('Appointment__r.', '');
-    return `SELECT COUNT() FROM Appointment__c WHERE Account__c = '${accountId}'${contactClause}`;
+    return `SELECT COUNT() FROM Appointment__c WHERE Account__c = '${accountId}'`;
   }
 
   function countFromQueryResult(json) {
@@ -229,24 +255,36 @@
   }
 
   function recentSurveySoql(accountId, lookupField, limit, requestSelect = '', contactFilter = null) {
-    if (!/^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(String(accountId || ''))) {
-      throw new Error('Invalid Account Id');
-    }
-    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(String(lookupField || ''))) {
-      throw new Error('Invalid survey lookup field');
-    }
     const extra = String(requestSelect || '').trim();
     if (extra && !/^Appointment__r\.[A-Za-z][A-Za-z0-9_]*(?:\.Name)?$/.test(extra)) {
       throw new Error('Invalid appointment request field');
     }
     const n = Math.min(Math.max(Number(limit) || 10, 1), 50);
-    const contactClause = primaryNscWhereClause(contactFilter);
+    let where;
+    if (contactFilter) {
+      // Appointment pages follow the Primary NSC Contact across accounts.
+      // A blank Account__c on the survey result must not drop the row.
+      where = primaryNscWhereClause(contactFilter).replace(/^ AND /, '');
+      if (!where || /\bAND\b/.test(where.slice(0, 4))) {
+        throw new Error('Invalid Primary NSC Contact');
+      }
+    } else {
+      if (!/^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(String(accountId || ''))) {
+        throw new Error('Invalid Account Id');
+      }
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(String(lookupField || ''))) {
+        throw new Error('Invalid survey lookup field');
+      }
+      // Survey Result.Account__c is sometimes blank. The appointment still
+      // points at the account, so include those rows on the account page.
+      where = `(${lookupField} = '${accountId}' OR Appointment__r.Account__c = '${accountId}')`;
+    }
     return (
       'SELECT Id, Name, Appointment__c, Appointment__r.Name' +
       (extra ? `, ${extra}` : '') +
       ', Date_Time_Survey_Submitted__c ' +
       `FROM ${SURVEY_OBJECT} ` +
-      `WHERE ${lookupField} = '${accountId}'${contactClause} ` +
+      `WHERE ${where} ` +
       'ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST ' +
       `LIMIT ${n}`
     );
@@ -342,10 +380,12 @@
   }
 
   /**
-   * Newest survey-result rows for an Account.
-   * Appointment pages also pass contactFilter so the query is limited to that
-   * Primary NSC Contact. SOQL avoids the related-list UI API, which only
-   * serves lists on the record type page layout.
+   * Newest survey-result rows.
+   * Account pages include a survey when its own account lookup matches, or
+   * when that lookup is blank and the appointment belongs to the account.
+   * Appointment pages pass contactFilter and filter only by that Primary NSC
+   * Contact. SOQL avoids the related-list UI API, which only serves lists on
+   * the record type page layout.
    */
   async function queryRecentSurveys(accountId, limit = 10, contactFilter = null) {
     const lookupField = await surveyAccountLookupField();
@@ -361,8 +401,8 @@
   }
 
   /**
-   * Whole CSAT count and total appointments for an account.
-   * Appointment pages pass the same Primary NSC filter as the survey list.
+   * Return ratio counts. Account pages count the account. Appointment pages
+   * count the Primary NSC Contact's User id, with no Account__c predicate.
    */
   async function queryReturnRatio(accountId, contactFilter = null) {
     const lookupField = await surveyAccountLookupField();

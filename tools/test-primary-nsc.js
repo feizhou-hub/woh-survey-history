@@ -113,11 +113,24 @@ describe('extractPrimaryNscFromUiRecord', () => {
 });
 
 describe('primaryNscSurveyFilter', () => {
-  it('filters the string Primary NSC Contact field by name', () => {
-    assert.deepEqual(
+  it('ignores a name when the appointment has no User id', () => {
+    assert.equal(
       primaryNscSurveyFilter({ name: 'Tri Sudjono', apiName: 'Primary_NSC_Contact__c' }),
-      { field: 'Appointment__r.Primary_NSC_Contact__c', value: 'Tri Sudjono' }
+      null
     );
+  });
+
+  it('filters by the User id when the name is stored on the string field', () => {
+    const hit = extractPrimaryNscFromUiRecord({
+      fields: {
+        Primary_NSC_Contact__c: { displayValue: null, value: 'Jayasri Raghavan' },
+        User__c: { displayValue: null, value: '0054X00000DuwANQAZ' },
+      },
+    });
+    assert.deepEqual(primaryNscSurveyFilter(hit), {
+      field: 'Appointment__r.User__c',
+      value: '0054X00000DuwANQAZ',
+    });
   });
 
   it('filters the User lookup when that field is the Primary NSC Contact', () => {

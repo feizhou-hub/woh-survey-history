@@ -130,28 +130,61 @@ async function sendMessageWithRetry(tabId, message, { attempts = 3 } = {}) {
   throw lastError || new Error('Could not reach the page content script');
 }
 
-async function openPanelOnActiveTab({ forceRefresh = false } = {}) {
-  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+const pendingPanelReload = new Set();
 
-  if (!isSurveyHostUrl(tab.url || '')) {
-    await showInstantPanel(tab.id, 'Open an Appointment (REQ) or Account record page first.');
+async function readPageBuild(tabId) {
+  try {
+    if (useChromeScripting()) {
+      const [injected] = await api.scripting.executeScript({
+        target: { tabId },
+        func: () => window.__wohSurveyBuild || '',
+      });
+      return injected?.result || '';
+    }
+    const results = await api.tabs.executeScript(tabId, {
+      code: 'window.__wohSurveyBuild || ""',
+    });
+    return (Array.isArray(results) ? results[0] : '') || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+async function openPanelOnTab(tabId, tabUrl, { forceRefresh = false, allowReload = true } = {}) {
+  if (!tabId) return;
+
+  if (!isSurveyHostUrl(tabUrl || '')) {
+    await showInstantPanel(tabId, 'Open an Appointment (REQ) or Account record page first.');
     return;
   }
 
-  await showInstantPanel(tab.id, 'Loading surveys…');
-  await ensureScripts(tab.id);
+  const currentBuild = api.runtime.getManifest?.().version || '';
+  if (allowReload && currentBuild && (await readPageBuild(tabId)) !== currentBuild) {
+    pendingPanelReload.add(tabId);
+    await showInstantPanel(tabId, `Reloading this page to load Survey History Tracking ${currentBuild}…`);
+    await api.tabs.reload(tabId);
+    return;
+  }
+
+  await showInstantPanel(tabId, 'Loading surveys…');
+  await ensureScripts(tabId);
 
   try {
-    await sendMessageWithRetry(tab.id, {
+    await sendMessageWithRetry(tabId, {
       type: 'SHOW_ACCOUNT_SURVEYS_PANEL',
       forceRefresh,
     });
   } catch (err) {
     console.error('[WOH Survey]', err);
-    await showInstantPanel(tab.id, err.message || 'Failed to open panel. Reload the Salesforce tab and try again.');
+    await showInstantPanel(tabId, err.message || 'Failed to open panel. Reload the Salesforce tab and try again.');
     setBadge('!', '#d93025');
   }
+}
+
+async function openPanelOnActiveTab({ forceRefresh = false } = {}) {
+  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  await openPanelOnTab(tab.id, tab.url, { forceRefresh });
 }
 
 const actionApi = api.browserAction || api.action;
@@ -173,6 +206,13 @@ if (api.webNavigation?.onCompleted) {
   api.webNavigation.onCompleted.addListener((details) => {
     if (details.frameId !== 0) return;
     if (!isSurveyHostUrl(details.url || '')) return;
+    if (pendingPanelReload.has(details.tabId)) {
+      pendingPanelReload.delete(details.tabId);
+      openPanelOnTab(details.tabId, details.url, { forceRefresh: true, allowReload: false }).catch((err) => {
+        console.error('[WOH Survey]', err);
+      });
+      return;
+    }
     ensureScripts(details.tabId).catch(() => {});
   });
 }

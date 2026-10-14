@@ -91,7 +91,7 @@ describe('recentSurveySoql', () => {
       recentSurveySoql('00180000014Y2uBAAS', 'Account__c', 20),
       'SELECT Id, Name, Appointment__c, Appointment__r.Name, Date_Time_Survey_Submitted__c ' +
         'FROM WOH_Survey_Result__c ' +
-        "WHERE Account__c = '00180000014Y2uBAAS' " +
+        "WHERE (Account__c = '00180000014Y2uBAAS' OR Appointment__r.Account__c = '00180000014Y2uBAAS') " +
         'ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST ' +
         'LIMIT 20'
     );
@@ -102,7 +102,7 @@ describe('recentSurveySoql', () => {
       recentSurveySoql('00180000014Y2uBAAS', 'Account__c', 20, 'Appointment__r.Request__c'),
       'SELECT Id, Name, Appointment__c, Appointment__r.Name, Appointment__r.Request__c, Date_Time_Survey_Submitted__c ' +
         'FROM WOH_Survey_Result__c ' +
-        "WHERE Account__c = '00180000014Y2uBAAS' " +
+        "WHERE (Account__c = '00180000014Y2uBAAS' OR Appointment__r.Account__c = '00180000014Y2uBAAS') " +
         'ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST ' +
         'LIMIT 20'
     );
@@ -123,7 +123,7 @@ describe('recentSurveySoql', () => {
     assert.equal(isAccountSurveySoql('SELECT Id FROM Account'), false);
   });
 
-  it('limits an appointment query to the Primary NSC Contact name', () => {
+  it('limits an appointment query to the Primary NSC Contact name and skips Account__c', () => {
     const soql = recentSurveySoql('00180000014Y2uBAAS', 'Account__c', 10, '', {
       field: 'Appointment__r.Primary_NSC_Contact__c',
       value: 'Tri Sudjono',
@@ -132,11 +132,12 @@ describe('recentSurveySoql', () => {
       soql,
       'SELECT Id, Name, Appointment__c, Appointment__r.Name, Date_Time_Survey_Submitted__c ' +
         'FROM WOH_Survey_Result__c ' +
-        "WHERE Account__c = '00180000014Y2uBAAS' AND Appointment__r.Primary_NSC_Contact__c = 'Tri Sudjono' " +
+        "WHERE Appointment__r.Primary_NSC_Contact__c = 'Tri Sudjono' " +
         'ORDER BY Date_Time_Survey_Submitted__c DESC NULLS LAST ' +
         'LIMIT 10'
     );
     assert.equal(isAccountSurveySoql(soql), true);
+    assert.doesNotMatch(soql, /Account__c/);
   });
 
   it('limits an appointment query to the Primary NSC User id and escapes names', () => {
@@ -144,14 +145,15 @@ describe('recentSurveySoql', () => {
       field: 'Appointment__r.User__c',
       value: '0054X00000Ea18YQAR',
     });
-    assert.match(byUser, /AND Appointment__r\.User__c = '0054X00000Ea18YQAR'/);
+    assert.match(byUser, /WHERE Appointment__r\.User__c = '0054X00000Ea18YQAR'/);
+    assert.doesNotMatch(byUser, /Account__c/);
     assert.equal(isAccountSurveySoql(byUser), true);
 
     const escaped = recentSurveySoql('00180000014Y2uBAAS', 'Account__c', 10, '', {
       field: 'Appointment__r.Primary_NSC_Contact__c',
       value: "O'Brien",
     });
-    assert.match(escaped, /Primary_NSC_Contact__c = 'O\\'Brien'/);
+    assert.match(escaped, /WHERE Appointment__r\.Primary_NSC_Contact__c = 'O\\'Brien'/);
     assert.equal(isAccountSurveySoql(escaped), true);
   });
 
@@ -181,7 +183,7 @@ describe('return ratio counts', () => {
     assert.equal(isAccountSurveySoql(soql), true);
   });
 
-  it('counts survey results for the Primary NSC Contact', () => {
+  it('counts survey results for the Primary NSC Contact User id and skips Account__c', () => {
     const byName = surveyCountSoql('00180000014Y2uBAAS', 'Account__c', {
       field: 'Appointment__r.Primary_NSC_Contact__c',
       value: 'Tri Sudjono',
@@ -189,19 +191,24 @@ describe('return ratio counts', () => {
     assert.equal(
       byName,
       'SELECT COUNT() FROM WOH_Survey_Result__c ' +
-        "WHERE Account__c = '00180000014Y2uBAAS' AND Appointment__r.Primary_NSC_Contact__c = 'Tri Sudjono'"
+        "WHERE Appointment__r.Primary_NSC_Contact__c = 'Tri Sudjono'"
     );
     assert.equal(isAccountSurveySoql(byName), true);
+    assert.doesNotMatch(byName, /Account__c/);
 
     const byUser = surveyCountSoql('00180000014Y2uBAAS', 'Account__c', {
       field: 'Appointment__r.User__c',
       value: '0054X00000Ea18YQAR',
     });
-    assert.match(byUser, /AND Appointment__r\.User__c = '0054X00000Ea18YQAR'$/);
+    assert.equal(
+      byUser,
+      "SELECT COUNT() FROM WOH_Survey_Result__c WHERE Appointment__r.User__c = '0054X00000Ea18YQAR'"
+    );
     assert.equal(isAccountSurveySoql(byUser), true);
+    assert.doesNotMatch(byUser, /Account__c/);
   });
 
-  it('counts appointments on the account, using the contact field without Appointment__r', () => {
+  it('counts appointments for the Primary NSC Contact User id and skips Account__c', () => {
     assert.equal(
       appointmentCountSoql('00180000014Y2uBAAS'),
       "SELECT COUNT() FROM Appointment__c WHERE Account__c = '00180000014Y2uBAAS'"
@@ -212,19 +219,21 @@ describe('return ratio counts', () => {
     });
     assert.equal(
       byName,
-      'SELECT COUNT() FROM Appointment__c ' +
-        "WHERE Account__c = '00180000014Y2uBAAS' AND Primary_NSC_Contact__c = 'O\\'Brien'"
+      "SELECT COUNT() FROM Appointment__c WHERE Primary_NSC_Contact__c = 'O\\'Brien'"
     );
     assert.equal(isAccountSurveySoql(byName), true);
+    assert.doesNotMatch(byName, /Account__c/);
+
+    const byUser = appointmentCountSoql('00180000014Y2uBAAS', {
+      field: 'Appointment__r.User__c',
+      value: '0054X00000Ea18YQAR',
+    });
     assert.equal(
-      isAccountSurveySoql(
-        appointmentCountSoql('00180000014Y2uBAAS', {
-          field: 'Appointment__r.User__c',
-          value: '0054X00000Ea18YQAR',
-        })
-      ),
-      true
+      byUser,
+      "SELECT COUNT() FROM Appointment__c WHERE User__c = '0054X00000Ea18YQAR'"
     );
+    assert.equal(isAccountSurveySoql(byUser), true);
+    assert.doesNotMatch(byUser, /Account__c/);
   });
 
   it('rejects count queries the background page must not run', () => {
